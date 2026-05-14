@@ -63,14 +63,29 @@ INDEX_HTML = """<!doctype html>
  .vizpane h3{margin:0 0 4px;font-size:13px;color:#aaa;font-weight:500}
  iframe{width:100%;height:46vh;border:1px solid #333;border-radius:4px;background:#fff}
  iframe.empty{background:#222;border-style:dashed}
- canvas.pr{width:100%;height:280px;border:1px solid #333;border-radius:4px;
+ canvas.pr{width:100%;height:auto;border:1px solid #333;border-radius:4px;
      background:#181818;display:block;cursor:crosshair}
- canvas.pr.empty{border-style:dashed}
- canvas#prAfter{height:auto}
+ canvas.pr.empty{border-style:dashed;min-height:200px}
  .prCtrl{display:flex;gap:6px;align-items:center;font-size:12px;color:#888;margin-top:-4px}
  .prCtrl button{padding:2px 8px;background:#333;color:#ccc;border:1px solid #555;
                 border-radius:3px;cursor:pointer;font:inherit}
  .prCtrl button:hover{background:#444}
+ .echo{display:flex;gap:10px;align-items:center;padding:6px 10px;margin:6px 0;
+       background:#222;border-left:4px solid #555;border-radius:4px;flex-wrap:wrap}
+ .echo .swatch{width:14px;height:14px;border-radius:3px;flex-shrink:0}
+ .echo .name{font-size:13px;color:#ddd;min-width:62px}
+ .echo input[type=text]{width:90px}
+ .echo .field{display:flex;flex-direction:column;font-size:11px;color:#888;gap:2px}
+ .echo .field>div{display:flex;gap:4px;align-items:center}
+ .echo button.mode{padding:4px 8px;background:#333;color:#ccc;border:1px solid #555;
+                   border-radius:3px;cursor:pointer;font:inherit;font-size:12px}
+ .echo button.mode.active{background:#7af;color:#000;border-color:#7af}
+ .echo button.rm{padding:2px 8px;background:#522;color:#fcc;border:1px solid #844;
+                 border-radius:3px;cursor:pointer;font:inherit;font-size:12px;margin-left:auto}
+ #addEcho{padding:6px 14px;background:#2a4;color:#000;border:0;border-radius:4px;
+          font:inherit;cursor:pointer}
+ #addEcho:hover{background:#3b5}
+ .modeHint{font-size:12px;color:#7af;min-height:1.2em;margin:4px 2px}
 </style></head>
 <body>
 <h1>polytime — rhythm-scaled MIDI echoes</h1>
@@ -96,384 +111,502 @@ INDEX_HTML = """<!doctype html>
   MIDI keyboard input requires Chrome, Edge, Opera, or Brave (Web MIDI API).
 </div>
 <div class="row">
-  <label>at (per-voice entry — comma list, prefix '+' = relative to previous)
-    <input id="at" type="text" value="2b" placeholder="2b   or   2b, 5b, 9b   or   2b, +2b, +1b" style="width:300px">
-  </label>
-  <label>scales (one per echo voice — fractions, decimals, sqrt(2), 60bpm…)
-    <input id="scales" type="text" value="3/2" placeholder="3/2, 1.5, sqrt(2), 60bpm" style="width:320px">
-  </label>
   <label>time sig (optional)
     <input id="tsig" type="text" placeholder="auto — e.g. 5/4">
   </label>
   <label class="inline">
     <input id="combine" type="checkbox" checked> include original in MIDI
   </label>
-</div>
-<div class="row">
-  <label>echo source (which slice of the input gets echoed — original stays whole)
-    <input id="themeRange" type="text" placeholder="all   or   0..4b   or   8..16" style="width:260px">
-  </label>
-  <label>output range (crop the final MIDI)
-    <input id="outRange" type="text" placeholder="all   or   0..16b" style="width:220px">
-  </label>
-  <button id="go">Generate</button>
+  <button id="addEcho">+ add echo</button>
   <button id="dl" class="dl" style="display:none">Download MIDI</button>
   <button id="quit" style="background:#444;color:#ccc;margin-left:auto"
           title="Stop the server and close polytime">× Quit</button>
 </div>
+<div id="echoes"></div>
+<div class="modeHint" id="modeHint"></div>
 <div id="status"></div>
 <div class="vizpane">
-  <div>
-    <h3>before (loaded MIDI) — click sets start, click again = end · drag = select · shift-drag = pan · wheel = zoom · clicks snap to nearby notes</h3>
-    <canvas id="prBefore" class="pr empty"></canvas>
-    <div class="prCtrl">
-      <button data-roll="before" data-action="zout">−</button>
-      <button data-roll="before" data-action="zin">+</button>
-      <button data-roll="before" data-action="fit">fit</button>
-      <button data-roll="before" data-action="clear">clear selection</button>
-      <span>selects echo source</span>
-    </div>
-  </div>
-  <div>
-    <h3>after (theme + echoes) — same interactions; selection here = output crop</h3>
-    <canvas id="prAfter" class="pr empty"></canvas>
-    <div class="prCtrl">
-      <button data-roll="after" data-action="zout">−</button>
-      <button data-roll="after" data-action="zin">+</button>
-      <button data-roll="after" data-action="fit">fit</button>
-      <button data-roll="after" data-action="clear">clear selection</button>
-      <span>selects output crop</span>
-    </div>
+  <h3>piano roll — original on top, one row per echo (+ combined if 2+ echoes)</h3>
+  <canvas id="pr" class="pr empty"></canvas>
+  <div class="prCtrl">
+    <button data-action="zout">−</button>
+    <button data-action="zin">+</button>
+    <button data-action="fit">fit</button>
+    <span>shift-drag = pan · wheel = zoom · click on original snaps to notes</span>
   </div>
 </div>
 <script>
 const $=(id)=>document.getElementById(id);
 const drop=$('drop'), file=$('file'), picked=$('picked'),
-      go=$('go'), dl=$('dl'), st=$('status'),
-      prBeforeEl=$('prBefore'), prAfterEl=$('prAfter');
-let chosen=null, dlUrl=null, dlName=null, jobId=0;
+      dl=$('dl'), st=$('status'), modeHint=$('modeHint'),
+      prEl=$('pr'), echoesEl=$('echoes');
+let chosen=null, dlUrl=null, dlName=null, jobId=0, previewJobId=0;
+let originalNotes=[];   // notes from last /preview
+let echoMeta=null;      // {total_beats, pitch_lo, pitch_hi, beats_per_bar}
+let processedVoices=null; // result of latest /process (per echo notes), keyed by index
 
 function setStatus(msg, err=false){st.textContent=msg;st.className=err?'err':'';}
 
 // ── Interactive piano roll ─────────────────────────────────────────────
-// One factory used twice: a single-voice version for the "before" pane
-// (selection -> echo source) and a multi-voice stacked version for the
-// "after" pane (selection -> output crop). Coordinates are stored in BEATS
-// and MIDI pitch, never pixels — selections survive any zoom/pan.
+// Single stacked roll: row 0 = original, row 1..N = one per echo, row N+1
+// = optional combined overlay. Coordinates are stored in BEATS and MIDI
+// pitch, never pixels — selections survive any zoom/pan.
 //
-// Interactions:
-//   - click            : sets start of selection; snaps to nearby note onset
-//   - second click     : sets end                ; snaps similarly
-//   - shift+click      : extends end (without clearing the anchor)
-//   - drag             : free-precision range select (no snap)
-//   - shift+drag       : pan
-//   - wheel            : zoom toward cursor
-//   - +/- / fit / clear: toolbar buttons
+// Selection model is mode-driven:
+//   - mode === null               : pan/zoom only
+//   - mode = {type:'source', i}   : clicks on the ORIGINAL row set echo[i]'s
+//                                    source range (click+click or drag)
+//   - mode = {type:'start',  i}   : single click anywhere sets echo[i]'s start
+// shift+drag pans regardless of mode. Wheel zooms. Buttons fit/zoom.
 
 const SNAP_TOLERANCE_BEATS = 0.5;
 const DRAG_THRESHOLD_PX = 4;
 const PALETTE = ['#3a7bd5','#d55e3a','#3ad57b','#d5c43a','#9933cc',
                  '#33aaff','#ff6699','#66cc88','#aaaa44'];
 
-function createPianoRoll(canvas, inputId) {
-  const c = canvas, ctx = c.getContext('2d');
-  // single-row mode: rows=[{label:'theme', notes:[…]}]
-  // multi-row mode:  rows=[{label:'theme'}, {label:'echo_1…'}, …, {label:'combined', overlay:true}]
-  let rows = [];
-  let totalBeats = 16, pitchLo = 60, pitchHi = 72, beatsPerBar = 4;
-  let xMin = 0, xMax = 16;
-  let sel = null;             // [startBeat, endBeat] or null
-  let anchor = null;          // pending click anchor beat (first click of a click+click sequence)
-  let drag = null;            // {mode, startX, startBeat, moved}
+const c = prEl, ctx = c.getContext('2d');
+let rows = [];               // [{label, notes, color, overlay?}]
+let totalBeats = 16, pitchLo = 60, pitchHi = 72, beatsPerBar = 4;
+let xMin = 0, xMax = 16;
+let mode = null;             // {type:'source'|'start', echoIdx}
+let pendingAnchor = null;    // beat anchor for click+click source range
+let drag = null;
+const ROW_MIN_H = 70;
+const padL = 70, padR = 12, padT = 8, padB = 22;
 
-  const padL = 60, padR = 12, padT = 8, padB = 22;
-  const ROW_MIN_H = 70;       // px per row (before-mode = full canvas)
-
-  function fitCanvas() {
-    const dpr = window.devicePixelRatio || 1;
-    const r = c.getBoundingClientRect();
-    // Multi-row mode auto-resizes the canvas to fit all rows.
-    if (rows.length > 1) {
-      const wantedH = padT + padB + rows.length * ROW_MIN_H;
-      if (c.clientHeight !== wantedH) c.style.height = wantedH + 'px';
+function fitCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const r = c.getBoundingClientRect();
+  const nrows = Math.max(1, rows.length);
+  const wantedH = padT + padB + nrows * ROW_MIN_H;
+  if (Math.abs(c.clientHeight - wantedH) > 2) c.style.height = wantedH + 'px';
+  const r2 = c.getBoundingClientRect();
+  c.width = Math.round(r2.width * dpr);
+  c.height = Math.round(r2.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return r2;
+}
+const plotW = (r) => r.width - padL - padR;
+const plotH = (r) => r.height - padT - padB;
+const beatToX = (b, r) => padL + (b - xMin) / (xMax - xMin) * plotW(r);
+const xToBeat = (x, r) => xMin + (x - padL) / plotW(r) * (xMax - xMin);
+function rowBounds(r) {
+  const n = Math.max(1, rows.length);
+  const h = plotH(r) / n;
+  return rows.map((_, i) => ({ y0: padT + i * h, y1: padT + (i+1) * h }));
+}
+function rowAtY(y, r) {
+  const rb = rowBounds(r);
+  for (let i = 0; i < rb.length; i++) {
+    if (y >= rb[i].y0 && y < rb[i].y1) return i;
+  }
+  return -1;
+}
+function pitchToY(p, rowIdx, r) {
+  const rb = rowBounds(r)[rowIdx];
+  const lo = pitchLo - 1, hi = pitchHi + 1;
+  return rb.y0 + 4 + (hi - p) / (hi - lo) * (rb.y1 - rb.y0 - 8);
+}
+function snapToOriginalNote(beat) {
+  let best = beat, bestD = SNAP_TOLERANCE_BEATS;
+  for (const n of originalNotes) {
+    for (const t of [n.on, n.off]) {
+      const d = Math.abs(t - beat);
+      if (d < bestD) { bestD = d; best = t; }
     }
-    const r2 = c.getBoundingClientRect();
-    c.width = Math.round(r2.width * dpr);
-    c.height = Math.round(r2.height * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return r2;
   }
-  const plotW = (r) => r.width - padL - padR;
-  const plotH = (r) => r.height - padT - padB;
-  const beatToX = (b, r) => padL + (b - xMin) / (xMax - xMin) * plotW(r);
-  const xToBeat = (x, r) => xMin + (x - padL) / plotW(r) * (xMax - xMin);
+  return best;
+}
+const clipBeats = (b) => Math.max(0, Math.min(totalBeats * 2, b));
 
-  function rowBounds(r) {
-    const h = plotH(r) / Math.max(1, rows.length);
-    return rows.map((_, i) => ({ y0: padT + i * h, y1: padT + (i+1) * h }));
+function draw() {
+  const r = fitCanvas();
+  ctx.fillStyle = '#181818'; ctx.fillRect(0, 0, r.width, r.height);
+  // bar grid
+  ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1;
+  ctx.fillStyle = '#666'; ctx.font = '11px system-ui,sans-serif';
+  ctx.textBaseline = 'top';
+  const firstBar = Math.floor(xMin / beatsPerBar);
+  const lastBar = Math.ceil(xMax / beatsPerBar);
+  for (let b = firstBar; b <= lastBar; b++) {
+    const beat = b * beatsPerBar;
+    const x = beatToX(beat, r);
+    if (x < padL - 1 || x > r.width - padR + 1) continue;
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, r.height - padB); ctx.stroke();
+    ctx.fillText('bar ' + (b+1), x + 3, r.height - padB + 3);
   }
-  function pitchToY(p, rowIdx, r) {
-    const rb = rowBounds(r)[rowIdx];
-    const lo = pitchLo - 1, hi = pitchHi + 1;
-    return rb.y0 + 4 + (hi - p) / (hi - lo) * (rb.y1 - rb.y0 - 8);
-  }
-
-  function snapToNote(beat) {
-    let best = beat, bestD = SNAP_TOLERANCE_BEATS;
-    for (const row of rows) {
-      if (!row.notes) continue;
-      for (const n of row.notes) {
-        const d = Math.abs(n.on - beat);
-        if (d < bestD) { bestD = d; best = n.on; }
-        const d2 = Math.abs(n.off - beat);
-        if (d2 < bestD) { bestD = d2; best = n.off; }
-      }
-    }
-    return best;
-  }
-
-  function draw() {
-    const r = fitCanvas();
-    ctx.fillStyle = '#181818';
-    ctx.fillRect(0, 0, r.width, r.height);
-    // bar grid (full plot height)
-    ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1;
-    ctx.fillStyle = '#666'; ctx.font = '11px system-ui,sans-serif';
-    ctx.textBaseline = 'top';
-    const firstBar = Math.floor(xMin / beatsPerBar);
-    const lastBar = Math.ceil(xMax / beatsPerBar);
-    for (let b = firstBar; b <= lastBar; b++) {
-      const beat = b * beatsPerBar;
-      const x = beatToX(beat, r);
-      if (x < padL - 1 || x > r.width - padR + 1) continue;
-      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, r.height - padB); ctx.stroke();
-      ctx.fillText('bar ' + (b+1), x + 3, r.height - padB + 3);
-    }
-    // selection
-    if (sel) {
-      const x0 = Math.max(padL, beatToX(sel[0], r));
-      const x1 = Math.min(r.width - padR, beatToX(sel[1], r));
-      ctx.fillStyle = 'rgba(120,170,255,0.18)';
-      ctx.fillRect(x0, padT, x1 - x0, plotH(r));
-      ctx.strokeStyle = '#7aa3ff'; ctx.lineWidth = 1;
+  const rb = rowBounds(r);
+  // source highlights on the original row (row 0)
+  if (rb.length) {
+    for (let i = 0; i < echoes.length; i++) {
+      const src = echoes[i].source;
+      if (!src) continue;
+      const x0 = Math.max(padL, beatToX(src[0], r));
+      const x1 = Math.min(r.width - padR, beatToX(src[1], r));
+      if (x1 <= x0) continue;
+      ctx.fillStyle = hexToRGBA(echoes[i].color, 0.18);
+      ctx.fillRect(x0, rb[0].y0, x1 - x0, rb[0].y1 - rb[0].y0);
+      ctx.strokeStyle = echoes[i].color; ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(x0, padT); ctx.lineTo(x0, r.height - padB);
-      ctx.moveTo(x1, padT); ctx.lineTo(x1, r.height - padB);
+      ctx.moveTo(x0, rb[0].y0); ctx.lineTo(x0, rb[0].y1);
+      ctx.moveTo(x1, rb[0].y0); ctx.lineTo(x1, rb[0].y1);
       ctx.stroke();
     }
-    // anchor (pending first-click)
-    if (anchor != null) {
-      const x = beatToX(anchor, r);
-      ctx.strokeStyle = '#f7c948'; ctx.setLineDash([4,3]); ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, r.height - padB); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#f7c948';
-      ctx.fillText('start', x + 3, padT + 2);
+  }
+  // start markers on each echo's own row
+  for (let i = 0; i < echoes.length; i++) {
+    const ridx = i + 1; // echo row
+    if (ridx >= rb.length) break;
+    const startBeat = parseStartBeat(echoes[i].start);
+    if (startBeat == null) continue;
+    const x = beatToX(startBeat, r);
+    if (x < padL - 1 || x > r.width - padR + 1) continue;
+    ctx.strokeStyle = echoes[i].color; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, rb[ridx].y0); ctx.lineTo(x, rb[ridx].y1);
+    ctx.stroke();
+    ctx.fillStyle = echoes[i].color;
+    ctx.fillText('▶', x + 2, rb[ridx].y0 + 2);
+  }
+  // pending click anchor for source range
+  if (pendingAnchor != null) {
+    const x = beatToX(pendingAnchor, r);
+    ctx.strokeStyle = '#f7c948'; ctx.setLineDash([4,3]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, r.height - padB); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  // rows
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (i > 0) {
+      ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(padL, rb[i].y0); ctx.lineTo(r.width-padR, rb[i].y0); ctx.stroke();
     }
-    // rows
-    const rb = rowBounds(r);
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      // row separator
-      if (i > 0) {
-        ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(padL, rb[i].y0); ctx.lineTo(r.width-padR, rb[i].y0); ctx.stroke();
+    ctx.fillStyle = '#bbb'; ctx.font = '11px system-ui,sans-serif';
+    ctx.textBaseline = 'top';
+    ctx.fillText(row.label || '', 4, rb[i].y0 + 4);
+    const rowH = rb[i].y1 - rb[i].y0 - 8;
+    const noteH = Math.max(2, rowH / (pitchHi - pitchLo + 3));
+    if (row.overlay) {
+      // combined: overlay original + all echo rows
+      for (let j = 0; j < rows.length; j++) {
+        if (j === i || rows[j].overlay) continue;
+        ctx.fillStyle = rows[j].color || PALETTE[j % PALETTE.length];
+        ctx.globalAlpha = 0.7;
+        drawNotes(rows[j].notes, i, r, noteH);
       }
-      // row label on the left
-      ctx.fillStyle = '#bbb'; ctx.font = '11px system-ui,sans-serif';
-      ctx.textBaseline = 'top';
-      ctx.fillText(row.label || '', 4, rb[i].y0 + 4);
-      // notes
-      const rowH = rb[i].y1 - rb[i].y0 - 8;
-      const noteH = Math.max(2, rowH / (pitchHi - pitchLo + 3));
-      if (row.overlay) {
-        // combined row: overlay every other row in palette colors
-        for (let j = 0; j < rows.length; j++) {
-          if (rows[j].overlay) continue;
-          ctx.fillStyle = PALETTE[j % PALETTE.length];
-          ctx.globalAlpha = 0.7;
-          drawNotes(rows[j].notes, i, r, noteH);
-        }
-        ctx.globalAlpha = 1.0;
-      } else {
-        ctx.fillStyle = PALETTE[i % PALETTE.length];
-        drawNotes(row.notes, i, r, noteH);
-      }
-    }
-    // plot border
-    ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
-    ctx.strokeRect(padL, padT, plotW(r), plotH(r));
-  }
-  function drawNotes(notes, rowIdx, r, noteH) {
-    if (!notes) return;
-    for (const n of notes) {
-      if (n.off < xMin || n.on > xMax) continue;
-      const x = beatToX(n.on, r);
-      const w = Math.max(1, beatToX(n.off, r) - x);
-      const y = pitchToY(n.midi, rowIdx, r) - noteH/2;
-      ctx.fillRect(x, y, w, noteH);
-    }
-  }
-
-  const clipBeats = (b) => Math.max(0, Math.min(totalBeats, b));
-
-  function fitView() {
-    xMin = 0;
-    xMax = Math.max(4, totalBeats * 1.02);
-    draw();
-  }
-  function zoomAt(factor, anchorBeat) {
-    const span = (xMax - xMin) / factor;
-    if (span < 0.5) return;
-    const t = (anchorBeat - xMin) / (xMax - xMin);
-    xMin = anchorBeat - t * span;
-    xMax = anchorBeat + (1 - t) * span;
-    if (xMin < -span * 0.1) { xMax -= xMin; xMin = 0; }
-    draw();
-  }
-
-  function setSelection(s, e) {
-    if (s == null || e == null || e <= s) sel = null;
-    else sel = [clipBeats(s), clipBeats(e)];
-    syncToInput();
-    draw();
-  }
-  function syncToInput() {
-    if (!inputId) return;
-    const inp = $(inputId);
-    if (!inp) return;
-    if (sel) inp.value = sel[0].toFixed(2) + '..' + sel[1].toFixed(2);
-    else inp.value = '';
-  }
-  function syncFromInput() {
-    if (!inputId) return;
-    const v = $(inputId).value.trim();
-    if (!v.includes('..')) { sel = null; draw(); return; }
-    const [a, b] = v.split('..').map(s => s.trim());
-    const parse = (s) => {
-      if (!s) return 0;
-      if (s.endsWith('b')) return parseFloat(s.slice(0,-1)) * beatsPerBar;
-      return parseFloat(s);
-    };
-    const s = parse(a), e = parse(b);
-    if (!isFinite(s) || !isFinite(e) || e <= s) { sel = null; draw(); return; }
-    sel = [clipBeats(s), clipBeats(e)];
-    draw();
-  }
-
-  // ── input handlers ───────────────────────────────────────────────────
-  c.addEventListener('mousedown', (e) => {
-    const r = c.getBoundingClientRect();
-    const mx = e.clientX - r.left;
-    const beat = clipBeats(xToBeat(mx, r));
-    if (e.shiftKey && e.button === 0 && !drag) {
-      // could be shift+click (extend) or shift+drag (pan) — defer decision
-      drag = { mode: 'shift-pending', startX: mx, startBeat: beat,
-               anchorBeat: anchor, lastX: mx, moved: false };
-    } else if (e.button === 2) {
-      drag = { mode: 'pan', startX: mx, lastX: mx, moved: false };
+      ctx.globalAlpha = 1.0;
     } else {
-      drag = { mode: 'pending', startX: mx, startBeat: beat, moved: false };
+      ctx.fillStyle = row.color || PALETTE[i % PALETTE.length];
+      drawNotes(row.notes, i, r, noteH);
     }
-  });
-  window.addEventListener('mousemove', (e) => {
-    if (!drag) return;
-    const r = c.getBoundingClientRect();
-    const mx = e.clientX - r.left;
-    if (!drag.moved && Math.abs(mx - drag.startX) > DRAG_THRESHOLD_PX) {
-      drag.moved = true;
-      if (drag.mode === 'shift-pending') drag.mode = 'pan';
-      else if (drag.mode === 'pending')  drag.mode = 'drag-select';
-    }
-    if (drag.mode === 'drag-select') {
-      const cur = clipBeats(xToBeat(mx, r));
-      anchor = null;  // dragging overrides any pending anchor
-      const lo = Math.min(drag.startBeat, cur), hi = Math.max(drag.startBeat, cur);
-      setSelection(lo, hi);
-    } else if (drag.mode === 'pan') {
-      const dx = mx - drag.lastX;
-      const dBeat = -dx / plotW(r) * (xMax - xMin);
-      xMin += dBeat; xMax += dBeat;
-      drag.lastX = mx;
-      draw();
-    }
-  });
-  window.addEventListener('mouseup', (e) => {
-    if (!drag) return;
-    if (!drag.moved) {
-      // it was a click, not a drag
-      const r = c.getBoundingClientRect();
-      const mx = e.clientX - r.left;
-      const beat = snapToNote(clipBeats(xToBeat(mx, r)));
-      if (drag.mode === 'shift-pending' || e.shiftKey) {
-        // shift+click: extend end of selection
-        const start = (sel ? sel[0] : (anchor != null ? anchor : beat));
-        const lo = Math.min(start, beat), hi = Math.max(start, beat);
-        if (hi > lo) setSelection(lo, hi);
-        anchor = null;
-      } else if (anchor == null) {
-        anchor = beat;
-        draw();
-      } else {
-        const lo = Math.min(anchor, beat), hi = Math.max(anchor, beat);
-        anchor = null;
-        if (hi > lo) setSelection(lo, hi);
-      }
-    }
-    drag = null;
-  });
-  c.addEventListener('contextmenu', (e) => e.preventDefault());
-  c.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const r = c.getBoundingClientRect();
-    const mx = e.clientX - r.left;
-    zoomAt(Math.exp(-e.deltaY * 0.0015), xToBeat(mx, r));
-  }, {passive: false});
-
-  if (inputId) {
-    $(inputId).addEventListener('input', syncFromInput);
   }
-
-  return {
-    load(rs, meta) {
-      rows = rs;
-      totalBeats = meta.total_beats || 16;
-      pitchLo = meta.pitch_lo ?? 60;
-      pitchHi = meta.pitch_hi ?? 72;
-      beatsPerBar = meta.beats_per_bar || 4;
-      sel = null; anchor = null;
-      fitView();
-      syncFromInput();
-    },
-    clear() {
-      rows = []; sel = null; anchor = null;
-      const r = c.getBoundingClientRect();
-      c.width = r.width; c.height = r.height;
-      ctx.fillStyle = '#181818'; ctx.fillRect(0,0,c.width,c.height);
-    },
-    fit() { fitView(); },
-    zoom(factor) { zoomAt(factor, (xMin + xMax) / 2); },
-    clearSel() { anchor = null; setSelection(null, null); },
-    redraw() { draw(); },
-  };
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
+  ctx.strokeRect(padL, padT, plotW(r), plotH(r));
+}
+function drawNotes(notes, rowIdx, r, noteH) {
+  if (!notes) return;
+  for (const n of notes) {
+    if (n.off < xMin || n.on > xMax) continue;
+    const x = beatToX(n.on, r);
+    const w = Math.max(1, beatToX(n.off, r) - x);
+    const y = pitchToY(n.midi, rowIdx, r) - noteH/2;
+    ctx.fillRect(x, y, w, noteH);
+  }
+}
+function hexToRGBA(hex, a) {
+  const m = /^#?([a-f\\d]{2})([a-f\\d]{2})([a-f\\d]{2})$/i.exec(hex);
+  if (!m) return 'rgba(120,170,255,'+a+')';
+  return 'rgba('+parseInt(m[1],16)+','+parseInt(m[2],16)+','+parseInt(m[3],16)+','+a+')';
+}
+function parseStartBeat(s) {
+  if (s == null) return null;
+  s = String(s).trim();
+  if (!s) return null;
+  if (s.endsWith('b')) {
+    const v = parseFloat(s.slice(0,-1));
+    return isFinite(v) ? v * beatsPerBar : null;
+  }
+  const v = parseFloat(s);
+  return isFinite(v) ? v : null;
+}
+function fitView() {
+  xMin = 0;
+  xMax = Math.max(4, totalBeats * 1.05);
+  draw();
+}
+function zoomAt(factor, anchorBeat) {
+  const span = (xMax - xMin) / factor;
+  if (span < 0.5) return;
+  const t = (anchorBeat - xMin) / (xMax - xMin);
+  xMin = anchorBeat - t * span;
+  xMax = anchorBeat + (1 - t) * span;
+  if (xMin < -span * 0.1) { xMax -= xMin; xMin = 0; }
+  draw();
 }
 
-const prBefore = createPianoRoll($('prBefore'), 'themeRange');
-const prAfter  = createPianoRoll($('prAfter'),  'outRange');
+// ── click/drag/wheel ───────────────────────────────────────────────────
+c.addEventListener('mousedown', (e) => {
+  const r = c.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const beat = clipBeats(xToBeat(mx, r));
+  const rowIdx = rowAtY(my, r);
+  if (e.shiftKey && e.button === 0) {
+    drag = { kind: 'shift-pending', startX: mx, startBeat: beat,
+             rowIdx, lastX: mx, moved: false };
+  } else if (e.button === 2) {
+    drag = { kind: 'pan', startX: mx, lastX: mx, moved: false };
+  } else {
+    drag = { kind: 'pending', startX: mx, startBeat: beat, rowIdx, moved: false };
+  }
+});
+window.addEventListener('mousemove', (e) => {
+  if (!drag) return;
+  const r = c.getBoundingClientRect();
+  const mx = e.clientX - r.left;
+  if (!drag.moved && Math.abs(mx - drag.startX) > DRAG_THRESHOLD_PX) {
+    drag.moved = true;
+    if (drag.kind === 'shift-pending') drag.kind = 'pan';
+    else if (drag.kind === 'pending') {
+      if (mode && mode.type === 'source' && drag.rowIdx === 0) {
+        drag.kind = 'drag-source';
+      } else {
+        drag.kind = 'noop';
+      }
+    }
+  }
+  if (drag.kind === 'drag-source') {
+    const cur = clipBeats(xToBeat(mx, r));
+    const lo = Math.min(drag.startBeat, cur), hi = Math.max(drag.startBeat, cur);
+    if (hi > lo) {
+      echoes[mode.echoIdx].source = [lo, hi];
+      syncEchoUI(mode.echoIdx);
+      draw();
+    }
+  } else if (drag.kind === 'pan') {
+    const dx = mx - drag.lastX;
+    const dBeat = -dx / plotW(r) * (xMax - xMin);
+    xMin += dBeat; xMax += dBeat;
+    drag.lastX = mx;
+    draw();
+  }
+});
+window.addEventListener('mouseup', (e) => {
+  if (!drag) return;
+  if (!drag.moved) {
+    const r = c.getBoundingClientRect();
+    const mx = e.clientX - r.left;
+    let beat = clipBeats(xToBeat(mx, r));
+    if (mode && mode.type === 'source') {
+      if (drag.rowIdx !== 0) {
+        setMsg('click on the ORIGINAL row (top) to set source', true);
+      } else {
+        beat = snapToOriginalNote(beat);
+        if (pendingAnchor == null) {
+          pendingAnchor = beat;
+          draw();
+        } else {
+          const lo = Math.min(pendingAnchor, beat), hi = Math.max(pendingAnchor, beat);
+          pendingAnchor = null;
+          if (hi > lo) {
+            echoes[mode.echoIdx].source = [lo, hi];
+            syncEchoUI(mode.echoIdx);
+            setMode(null);
+            schedulePreview();
+          }
+          draw();
+        }
+      }
+    } else if (mode && mode.type === 'start') {
+      if (drag.rowIdx === 0) beat = snapToOriginalNote(beat);
+      echoes[mode.echoIdx].start = beat.toFixed(2);
+      syncEchoUI(mode.echoIdx);
+      setMode(null);
+      schedulePreview();
+      draw();
+    }
+  } else if (drag.kind === 'drag-source' && mode) {
+    setMode(null);
+    schedulePreview();
+  }
+  drag = null;
+});
+c.addEventListener('contextmenu', (e) => e.preventDefault());
+c.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const r = c.getBoundingClientRect();
+  const mx = e.clientX - r.left;
+  zoomAt(Math.exp(-e.deltaY * 0.0015), xToBeat(mx, r));
+}, {passive: false});
 
-document.querySelectorAll('.prCtrl button[data-roll]').forEach(btn => {
-  const target = btn.dataset.roll === 'before' ? prBefore : prAfter;
+document.querySelectorAll('.prCtrl button[data-action]').forEach(btn => {
   btn.addEventListener('click', () => {
     switch (btn.dataset.action) {
-      case 'zin':   target.zoom(1.4); break;
-      case 'zout':  target.zoom(1/1.4); break;
-      case 'fit':   target.fit(); break;
-      case 'clear': target.clearSel(); break;
+      case 'zin':   zoomAt(1.4, (xMin+xMax)/2); break;
+      case 'zout':  zoomAt(1/1.4, (xMin+xMax)/2); break;
+      case 'fit':   fitView(); break;
     }
   });
 });
+window.addEventListener('resize', () => { draw(); });
 
-window.addEventListener('resize', () => { prBefore.redraw(); prAfter.redraw(); });
+// ── echo strip state ───────────────────────────────────────────────────
+const echoes = [];  // [{scale, source:[s,e]|null, start, color}]
+function makeEcho() {
+  const i = echoes.length;
+  return { scale: '3/2', source: null, start: (2 * (i+1)) + 'b',
+           color: PALETTE[i % PALETTE.length] };
+}
+function setMode(m) {
+  mode = m;
+  pendingAnchor = null;
+  document.querySelectorAll('.echo button.mode').forEach(b => b.classList.remove('active'));
+  if (m) {
+    const sel = '.echo[data-idx="'+m.echoIdx+'"] button.mode[data-mode="'+m.type+'"]';
+    const btn = document.querySelector(sel);
+    if (btn) btn.classList.add('active');
+    modeHint.textContent =
+      m.type === 'source'
+        ? 'click on ORIGINAL row to set echo '+(m.echoIdx+1)+' source (click+click or drag)'
+        : 'click anywhere to set echo '+(m.echoIdx+1)+' start';
+  } else {
+    modeHint.textContent = '';
+  }
+  draw();
+}
+function renderEchoes() {
+  echoesEl.innerHTML = '';
+  echoes.forEach((e, i) => {
+    const div = document.createElement('div');
+    div.className = 'echo';
+    div.dataset.idx = i;
+    div.style.borderLeftColor = e.color;
+    div.innerHTML = `
+      <span class="swatch" style="background:${e.color}"></span>
+      <span class="name">echo ${i+1}</span>
+      <label class="field">scale<input data-f="scale" type="text" value="${e.scale}"></label>
+      <div class="field">source
+        <div><input data-f="source" type="text" value="${e.source ? e.source[0].toFixed(2)+'..'+e.source[1].toFixed(2) : ''}" placeholder="all"><button class="mode" data-mode="source">pick</button></div>
+      </div>
+      <div class="field">start
+        <div><input data-f="start" type="text" value="${e.start}" placeholder="2b"><button class="mode" data-mode="start">pick</button></div>
+      </div>
+      <button class="rm">×</button>`;
+    echoesEl.appendChild(div);
+    div.querySelectorAll('input[data-f]').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const f = inp.dataset.f;
+        if (f === 'source') {
+          const v = inp.value.trim();
+          if (v.includes('..')) {
+            const [a, b] = v.split('..').map(parseFloat);
+            if (isFinite(a) && isFinite(b) && b > a) e.source = [a, b];
+            else e.source = null;
+          } else e.source = null;
+        } else {
+          e[f] = inp.value;
+        }
+        draw();
+        schedulePreview();
+      });
+    });
+    div.querySelectorAll('button.mode').forEach(b => {
+      b.addEventListener('click', () => {
+        const t = b.dataset.mode;
+        if (mode && mode.type === t && mode.echoIdx === i) setMode(null);
+        else setMode({ type: t, echoIdx: i });
+      });
+    });
+    div.querySelector('button.rm').addEventListener('click', () => {
+      echoes.splice(i, 1);
+      // re-assign colors so they stay consecutive
+      echoes.forEach((x, k) => x.color = PALETTE[k % PALETTE.length]);
+      if (mode && mode.echoIdx === i) setMode(null);
+      renderEchoes();
+      rebuildRows();
+      schedulePreview();
+    });
+  });
+}
+function syncEchoUI(i) {
+  const div = echoesEl.querySelector('.echo[data-idx="'+i+'"]');
+  if (!div) return;
+  const e = echoes[i];
+  div.querySelector('input[data-f="source"]').value =
+    e.source ? e.source[0].toFixed(2)+'..'+e.source[1].toFixed(2) : '';
+  div.querySelector('input[data-f="start"]').value = e.start;
+}
+
+$('addEcho').addEventListener('click', () => {
+  if (echoes.length >= 8) { setStatus('max 8 echoes', true); return; }
+  echoes.push(makeEcho());
+  renderEchoes();
+  rebuildRows();
+  schedulePreview();
+});
+
+// ── rows = original + per-echo + (combined if 2+) ──────────────────────
+function rebuildRows() {
+  rows = [{ label: 'original', notes: originalNotes, color: '#888' }];
+  for (let i = 0; i < echoes.length; i++) {
+    const v = processedVoices && processedVoices[i+1];
+    rows.push({ label: 'echo '+(i+1), notes: v ? v.notes : [], color: echoes[i].color });
+  }
+  if (echoes.length >= 2) {
+    rows.push({ label: 'combined', overlay: true });
+  }
+  draw();
+}
+
+let previewTimer = null;
+function schedulePreview() {
+  if (!chosen || !echoes.length) { draw(); return; }
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(runPreview, 350);
+}
+async function runPreview() {
+  if (!chosen || !echoes.length) return;
+  const mine = ++previewJobId;
+  const fd = buildFormData();
+  try {
+    const r = await fetch('/process', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (mine !== previewJobId) return;
+    if (!r.ok) { setStatus('preview: '+(j.error||'failed'), true); return; }
+    setStatus('time signature: '+j.detected_ts);
+    // Map j.voices to row indices. Server returns theme first if combine,
+    // then echo_1, echo_2… We want echoes by their original index.
+    processedVoices = {};
+    let echoCursor = 1;
+    for (const v of j.voices) {
+      if (v.label === 'theme' || v.label.startsWith('theme')) {
+        processedVoices[0] = v;
+      } else {
+        processedVoices[echoCursor++] = v;
+      }
+    }
+    rebuildRows();
+    dlUrl = j.midi_data_url; dlName = j.midi_filename;
+    dl.style.display = 'inline-block';
+  } catch (e) {
+    if (mine === previewJobId) setStatus('preview error: '+e.message, true);
+  }
+}
+function buildFormData() {
+  const fd = new FormData();
+  fd.append('mid', chosen);
+  fd.append('tsig', $('tsig').value);
+  fd.append('combine', $('combine').checked ? '1' : '0');
+  fd.append('echoes', JSON.stringify(echoes.map(e => ({
+    scale: e.scale,
+    source: e.source ? (e.source[0]+'..'+e.source[1]) : '',
+    start: e.start || '0',
+  }))));
+  return fd;
+}
+function setMsg(m, err) { setStatus(m, !!err); }
+$('tsig').addEventListener('input', schedulePreview);
+$('combine').addEventListener('change', schedulePreview);
 
 
 
@@ -481,8 +614,8 @@ window.addEventListener('resize', () => { prBefore.redraw(); prAfter.redraw(); }
 async function pickFile(f){
   const mine = ++jobId;
   chosen=f; picked.textContent=f.name;
-  prBefore.clear(); $('prBefore').classList.add('empty');
-  prAfter.clear();  $('prAfter').classList.add('empty');
+  originalNotes=[]; processedVoices=null;
+  rebuildRows(); prEl.classList.add('empty');
   dl.style.display='none'; dlUrl=null; dlName=null;
   setStatus('loading preview...');
   const fd=new FormData(); fd.append('mid', f);
@@ -491,10 +624,18 @@ async function pickFile(f){
     const j=await r.json();
     if(mine !== jobId) return;
     if(!r.ok) throw new Error(j.error||'preview failed');
-    prBefore.load([{label: 'theme', notes: j.notes}], j);
-    $('prBefore').classList.remove('empty');
+    originalNotes = j.notes;
+    totalBeats = j.total_beats || 16;
+    pitchLo = j.pitch_lo ?? 60;
+    pitchHi = j.pitch_hi ?? 72;
+    beatsPerBar = j.beats_per_bar || 4;
+    if (!echoes.length) { echoes.push(makeEcho()); renderEchoes(); }
+    rebuildRows();
+    fitView();
+    prEl.classList.remove('empty');
     $('tsig').placeholder='auto — detected '+j.detected_ts;
     setStatus('detected time signature: '+j.detected_ts+' · '+j.notes.length+' notes');
+    schedulePreview();
   }catch(e){
     if(mine !== jobId) return;
     setStatus('error: '+e.message, true);
@@ -517,36 +658,6 @@ drop.addEventListener('drop',e=>{
   if(f) pickFile(f);
 });
 
-go.addEventListener('click',async()=>{
-  if(!chosen){setStatus('pick a MIDI file first', true);return;}
-  const mine = ++jobId;
-  go.disabled=true; dl.style.display='none';
-  setStatus('processing...');
-  const fd=new FormData();
-  fd.append('mid', chosen);
-  fd.append('at', $('at').value);
-  fd.append('scales', $('scales').value);
-  fd.append('tsig', $('tsig').value);
-  fd.append('combine', $('combine').checked ? '1' : '0');
-  fd.append('theme_range', $('themeRange').value);
-  fd.append('output_range', $('outRange').value);
-  try{
-    const r=await fetch('/process',{method:'POST',body:fd});
-    const j=await r.json();
-    if(mine !== jobId) return;
-    if(!r.ok) throw new Error(j.error||'failed');
-    setStatus('time signature: '+j.detected_ts);
-    const rows = j.voices.map(v => ({label: v.label, notes: v.notes}));
-    if (rows.length > 1) rows.push({label: 'combined', overlay: true});
-    prAfter.load(rows, j);
-    $('prAfter').classList.remove('empty');
-    dlUrl=j.midi_data_url; dlName=j.midi_filename;
-    dl.style.display='inline-block';
-  }catch(e){
-    if(mine === jobId) setStatus('error: '+e.message, true);
-  }
-  finally{ if(mine === jobId) go.disabled=false; }
-});
 dl.addEventListener('click',()=>{
   if(!dlUrl)return;
   const a=document.createElement('a');a.href=dlUrl;a.download=dlName;a.click();
@@ -906,22 +1017,21 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(mid_field, tuple):
             raise ValueError("missing MIDI file")
         filename, mid_bytes = mid_field
-        at_str = (fields.get("at") or b"2b").decode().strip() or "2b"
-        scales_str = (fields.get("scales") or b"3/2").decode().strip() or "3/2"
         tsig_str = (fields.get("tsig") or b"").decode().strip()
         combine = (fields.get("combine") or b"1").decode().strip() == "1"
-        theme_range_str = (fields.get("theme_range") or b"").decode().strip()
-        output_range_str = (fields.get("output_range") or b"").decode().strip()
+        echoes_raw = (fields.get("echoes") or b"[]").decode().strip()
+        try:
+            echoes_list = json.loads(echoes_raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"bad echoes JSON: {e}")
+        if not isinstance(echoes_list, list) or not echoes_list:
+            raise ValueError("provide at least one echo voice")
+        if len(echoes_list) > 8:
+            raise ValueError("max 8 echo voices")
 
         base_bpm = 120.0
-        scales = tuple(parse_scale(s.strip(), base_bpm)
-                       for s in scales_str.split(",") if s.strip())
-        if not scales:
-            raise ValueError("provide at least one scale")
-        if len(scales) > 8:
-            raise ValueError("max 8 echo voices")
-        voice_rows = len(scales) + (1 if combine else 0)
-        n_rows = voice_rows + (1 if voice_rows > 1 else 0)
+        scales = tuple(parse_scale(str(e.get("scale", "")).strip(), base_bpm)
+                       for e in echoes_list)
         stem = Path(filename or "input").stem
 
         with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as f:
@@ -935,8 +1045,8 @@ class Handler(BaseHTTPRequestHandler):
                 base_bpm = detected_bpm
                 # Re-parse scales now that we know the file's tempo (only
                 # changes results for entries that used the `bpm` suffix).
-                scales = tuple(parse_scale(s.strip(), base_bpm)
-                               for s in scales_str.split(",") if s.strip())
+                scales = tuple(parse_scale(str(e.get("scale", "")).strip(), base_bpm)
+                               for e in echoes_list)
             ts_override = parse_ts(tsig_str)
             detected = detect_time_signature(in_path)
             ts = ts_override or detected or TimeSignature(4, 4)
@@ -946,40 +1056,20 @@ class Handler(BaseHTTPRequestHandler):
             elif not detected:
                 ts_label += " (default)"
 
-            at_tokens = [a.strip() for a in at_str.split(",") if a.strip()]
-            if len(at_tokens) <= 1:
-                # Staggered: voice k enters at k*at. `+` prefix is meaningless
-                # here so strip it if present.
-                base = at_tokens[0].lstrip("+") if at_tokens else "2b"
-                at_f = _parse_when(base, ts.beats_per_measure)
-                ats = None
-            else:
-                if len(at_tokens) != len(scales):
-                    raise ValueError(
-                        f"got {len(at_tokens)} entry times but {len(scales)} scales — "
-                        f"give one `at` value (staggered) or one per voice"
-                    )
-                # Resolve each token; '+X' = previous voice's resolved at + X.
-                resolved: list[Fraction] = []
-                for tok in at_tokens:
-                    if tok.startswith("+"):
-                        if not resolved:
-                            raise ValueError(
-                                "first 'at' value can't use '+' — there is no previous voice"
-                            )
-                        resolved.append(resolved[-1]
-                                        + _parse_when(tok[1:], ts.beats_per_measure))
-                    else:
-                        resolved.append(_parse_when(tok, ts.beats_per_measure))
-                at_f = resolved[0]
-                ats = tuple(resolved)
-            theme_range = parse_range(theme_range_str, ts.beats_per_measure)
-            output_range = parse_range(output_range_str, ts.beats_per_measure)
+            cap = ts.beats_per_measure
+            ats = tuple(
+                _parse_when(str(e.get("start", "")).strip() or "0", cap)
+                for e in echoes_list
+            )
+            theme_ranges = tuple(
+                parse_range(str(e.get("source", "")).strip() or "", cap)
+                for e in echoes_list
+            )
             mid_path, _viz_path = polytime(
-                in_path, at=at_f, scales=scales, ats=ats,
+                in_path, at=ats[0], scales=scales, ats=ats,
                 out=out_mid, diff_png=None, time_signature=ts,
                 combine=combine, viz_connectors=False,
-                theme_range=theme_range, output_range=output_range,
+                theme_ranges=theme_ranges,
             )
             mid_data = mid_path.read_bytes()
             # Read the produced MIDI back to recover the per-track note streams

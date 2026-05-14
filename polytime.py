@@ -196,6 +196,7 @@ def polytime(
     combine: bool = True,
     viz_connectors: bool = True,
     theme_range: tuple[Fraction, Fraction] | None = None,
+    theme_ranges: tuple[tuple[Fraction, Fraction] | None, ...] | None = None,
     output_range: tuple[Fraction, Fraction] | None = None,
 ) -> tuple[Path, Path]:
     """Append rhythm-scaled echoes to the first part of `input_path` and
@@ -231,10 +232,34 @@ def polytime(
     # full polyphony of the input.
     score = load_mido(str(input_path), time_signature=time_signature)
     full_theme = _flatten_score(score)
-    # theme_range controls *what gets echoed*, not what goes into the output.
-    # When combine=True the full original is preserved as the theme track no
-    # matter how narrow the echoed slice is.
-    if theme_range is not None:
+    # theme_range / theme_ranges control *what gets echoed*, not what goes into
+    # the output. When combine=True the full original is preserved as the theme
+    # track no matter how narrow the echoed slice is.
+    # theme_ranges (per-voice) takes precedence over theme_range (single).
+    if theme_ranges is not None:
+        if len(theme_ranges) != len(scales_f):
+            raise ValueError(
+                f"theme_ranges length {len(theme_ranges)} must match "
+                f"scales length {len(scales_f)}"
+            )
+        per_voice_sources: list[Voice] = []
+        for i, rng in enumerate(theme_ranges):
+            if rng is None:
+                per_voice_sources.append(full_theme)
+                continue
+            ts_start, ts_end = rng
+            src = Voice(id="theme", events=tuple(
+                replace(e, offset=e.offset - ts_start)
+                for e in full_theme.events
+                if ts_start <= e.offset < ts_end
+            ))
+            if not src.events:
+                raise ValueError(
+                    f"theme range {ts_start}..{ts_end} (voice {i+1}) "
+                    f"contains no notes"
+                )
+            per_voice_sources.append(src)
+    elif theme_range is not None:
         ts_start, ts_end = theme_range
         echo_source = Voice(id="theme", events=tuple(
             replace(e, offset=e.offset - ts_start)
@@ -243,10 +268,9 @@ def polytime(
         ))
         if not echo_source.events:
             raise ValueError(f"theme range {ts_start}..{ts_end} contains no notes")
+        per_voice_sources = [echo_source] * len(scales_f)
     else:
-        echo_source = full_theme
-    # `theme` is the local name used downstream for echo construction.
-    theme = echo_source
+        per_voice_sources = [full_theme] * len(scales_f)
 
     def _fmt(x: Fraction) -> str:
         # Compact label: keep small fractions exact (3/2, 5/4) but render
@@ -256,8 +280,10 @@ def polytime(
         return f"{float(x):.4g}"
 
     echo_voices: list[Voice] = []
-    for k, (s, a) in enumerate(zip(scales_f, ats_f), start=1):
-        scaled = scale_rhythm(theme, s)
+    for k, (s, a, src) in enumerate(
+        zip(scales_f, ats_f, per_voice_sources), start=1
+    ):
+        scaled = scale_rhythm(src, s)
         shifted = shift_offset(scaled, a)
         echo_voices.append(Voice(
             id=f"echo_{k}_x{_fmt(s)}@{_fmt(a)}", events=shifted.events,
@@ -322,7 +348,7 @@ def polytime(
         echo_only = Voice(id="echo", events=tuple(
             sorted(all_echo_events, key=lambda e: e.offset)
         ))
-        diff(trace(theme), echo_only, title=title,
+        diff(trace(full_theme), echo_only, title=title,
              connectors=viz_connectors).savefig(viz_path)
 
     return out, viz_path
