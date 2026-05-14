@@ -19,16 +19,23 @@ python app.py
 
 A browser tab opens at `http://127.0.0.1:<port>`. Drop a `.mid` file (or use the MIDI-keyboard recorder if you're in Chrome/Edge/Opera/Brave).
 
-### As a standalone Windows .exe
+### As a standalone binary (no Python needed)
 
-```bash
-pip install -r requirements-dev.txt
-build.bat
-```
+Grab the right zip from the [Releases](../../releases) page:
 
-Produces `dist/polytime.exe` — a single ~30 MB file. Double-click it on any Windows machine (no Python needed) and the browser opens.
+- **Windows:** `polytime-windows.zip` → `polytime.exe`. Double-click. First launch SmartScreen will warn "unrecognized app" — click *More info → Run anyway*.
+- **macOS:** `polytime-macos.zip` → `polytime`. Apple Silicon (M1/M2/M3/M4). First launch Gatekeeper will block it; right-click → *Open* → confirm. (Or run `xattr -d com.apple.quarantine polytime` once.)
+- **Linux:** `polytime-linux.zip` → `polytime`. `chmod +x polytime && ./polytime`.
 
-For macOS / Linux, the same PyInstaller command in `build.bat` works on those platforms; it just needs to be run there.
+### Building binaries yourself
+
+- **Windows, local:** `pip install -r requirements-dev.txt`, then `.\build.bat` → `dist\polytime.exe`.
+- **All three platforms, in the cloud:** push a version tag and GitHub Actions does it for you:
+  ```bash
+  git tag v0.1.0
+  git push --tags
+  ```
+  A draft release with Windows/macOS/Linux artifacts appears under [Releases](../../releases) ~5–10 min later. See [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
 ## The UI
 
