@@ -132,7 +132,7 @@ INDEX_HTML = """<!doctype html>
     <button data-action="zout">−</button>
     <button data-action="zin">+</button>
     <button data-action="fit">fit</button>
-    <span>drag = pan · wheel or +/− = zoom · use pick buttons to select source/start</span>
+    drag = pan · +/− or buttons = zoom · use pick buttons to select source/start
   </div>
 </div>
 <script>
@@ -432,12 +432,7 @@ window.addEventListener('mouseup', (e) => {
   drag = null;
 });
 c.addEventListener('contextmenu', (e) => e.preventDefault());
-c.addEventListener('wheel', (e) => {
-  e.preventDefault();
-  const r = c.getBoundingClientRect();
-  const mx = e.clientX - r.left;
-  zoomAt(Math.exp(-e.deltaY * 0.0015), xToBeat(mx, r));
-}, {passive: false});
+
 
 document.querySelectorAll('.prCtrl button[data-action]').forEach(btn => {
   btn.addEventListener('click', () => {
