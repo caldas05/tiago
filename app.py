@@ -55,7 +55,9 @@ INDEX_HTML = """<!doctype html>
    color:#eee;border:1px solid #444;border-radius:4px;font:inherit;width:110px}
  button{padding:8px 16px;background:#4a7;color:#000;border:0;border-radius:4px;
         font:inherit;font-weight:600;cursor:pointer}
- button:disabled{background:#555;color:#888;cursor:wait}
+ button:disabled{background:#3a3a3a;color:#777;cursor:default}
+ #pauseBtn:not(:disabled){background:#d4a017;color:#000}
+ #stopBtn:not(:disabled){background:#c25a5a;color:#fff}
  button.dl{background:#7af}
  #status{margin:6px 0;font-size:13px;color:#aaa;min-height:1.2em}
  #status.err{color:#f77}
@@ -90,10 +92,11 @@ INDEX_HTML = """<!doctype html>
 <body>
 <h1>polytime — rhythm-scaled MIDI echoes</h1>
 <div id="drop">
-  <div>Drop a .mid file here, or click to choose</div>
+  <div>Drop .mid files here (multiple OK), or click to add</div>
   <div id="picked" style="margin-top:6px;color:#7af;font-size:13px"></div>
-  <input id="file" type="file" accept=".mid,.midi,audio/midi" style="display:none">
+  <input id="file" type="file" accept=".mid,.midi,audio/midi" multiple style="display:none">
 </div>
+<div id="inputList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px"></div>
 <div id="recBox" style="margin-top:10px;padding:10px;border:1px solid #333;
      border-radius:6px;background:#1f1f1f;display:none">
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -114,10 +117,10 @@ INDEX_HTML = """<!doctype html>
   <label>time sig (optional)
     <input id="tsig" type="text" placeholder="auto — e.g. 5/4">
   </label>
-  <label class="inline">
-    <input id="combine" type="checkbox" checked> include original in MIDI
+  <label>output crop (beats)
+    <input id="outCrop" type="text" placeholder="full · or 0..16">
   </label>
-  <button id="addEcho">+ add echo</button>
+  <button id="addEcho">+ add polytime</button>
   <button id="dl" class="dl" style="display:none">Download MIDI</button>
   <button id="quit" style="background:#444;color:#ccc;margin-left:auto"
           title="Stop the server and close polytime">× Quit</button>
@@ -132,8 +135,8 @@ INDEX_HTML = """<!doctype html>
     <select id="playOut" style="padding:6px 8px;background:#222;color:#eee;
             border:1px solid #444;border-radius:4px;font:inherit;max-width:240px"></select>
     <button id="playBtn" disabled>▶ Play</button>
-    <button id="pauseBtn" disabled style="background:#888">⏸ Pause</button>
-    <button id="stopBtn" disabled style="background:#a55;color:#fff">⏹ Stop</button>
+    <button id="pauseBtn" disabled>⏸ Pause</button>
+    <button id="stopBtn" disabled>⏹ Stop</button>
     <label class="inline">speed
       <input id="playSpeed" type="range" min="0.25" max="2" step="0.05" value="1"
              style="width:110px">
@@ -155,7 +158,7 @@ INDEX_HTML = """<!doctype html>
   Live playback requires Chrome, Edge, Opera, or Brave (Web MIDI API).
 </div>
 <div class="vizpane">
-  <h3>piano roll — original on top, one row per echo (+ combined if 2+ echoes)</h3>
+  <h3>piano roll — one row per input (sources only), one row per polytime, plus combined output</h3>
   <canvas id="pr" class="pr empty"></canvas>
   <div class="prCtrl">
     <button data-action="zout">−</button>
@@ -169,8 +172,11 @@ const $=(id)=>document.getElementById(id);
 const drop=$('drop'), file=$('file'), picked=$('picked'),
       dl=$('dl'), st=$('status'), modeHint=$('modeHint'),
       prEl=$('pr'), echoesEl=$('echoes');
-let chosen=null, dlUrl=null, dlName=null, jobId=0, previewJobId=0;
-let originalNotes=[];   // notes from last /preview
+let dlUrl=null, dlName=null, jobId=0, previewJobId=0;
+const inputs=[];  // [{id, file, name, offset:number, kind:'file'|'rec'}]
+let nextInputId=1;
+let originalNotes=[];   // flat union of all included inputs (kept for snap helpers)
+let inputNotes=[];      // per-input notes from /preview: [{id,name,offset,notes,...}]
 let echoMeta=null;      // {total_beats, pitch_lo, pitch_hi, beats_per_bar}
 let processedVoices=null; // result of latest /process (per echo notes), keyed by index
 let detectedBpm=120;    // from /preview; speed slider multiplies this
@@ -245,6 +251,10 @@ function snapToOriginalNote(beat) {
       if (d < bestD) { bestD = d; best = t; }
     }
   }
+  // Snap to the nearest integer beat too — small recording-jitter offsets
+  // (15.96 → 16) shouldn't bleed into the output crop.
+  const ib = Math.round(best);
+  if (Math.abs(best - ib) <= 0.15) best = ib;
   return best;
 }
 const clipBeats = (b) => Math.max(0, Math.min(totalBeats * 2, b));
@@ -266,27 +276,38 @@ function draw() {
     ctx.fillText('bar ' + (b+1), x + 3, r.height - padB + 3);
   }
   const rb = rowBounds(r);
-  // source highlights on the original row (row 0)
+  // Source highlights paint on whatever input row the echo points at.
   if (rb.length) {
     for (let i = 0; i < echoes.length; i++) {
       const src = echoes[i].source;
       if (!src) continue;
+      const sid = echoes[i].source_id;
+      let targetIdx = -1;
+      for (let k = 0; k < rows.length; k++) {
+        if (rows[k].kind === 'input' && (sid == null || rows[k].inputId === sid)) {
+          targetIdx = k; break;
+        }
+      }
+      if (targetIdx < 0) continue;
       const x0 = Math.max(padL, beatToX(src[0], r));
       const x1 = Math.min(r.width - padR, beatToX(src[1], r));
       if (x1 <= x0) continue;
       ctx.fillStyle = hexToRGBA(echoes[i].color, 0.18);
-      ctx.fillRect(x0, rb[0].y0, x1 - x0, rb[0].y1 - rb[0].y0);
+      ctx.fillRect(x0, rb[targetIdx].y0, x1 - x0, rb[targetIdx].y1 - rb[targetIdx].y0);
       ctx.strokeStyle = echoes[i].color; ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(x0, rb[0].y0); ctx.lineTo(x0, rb[0].y1);
-      ctx.moveTo(x1, rb[0].y0); ctx.lineTo(x1, rb[0].y1);
+      ctx.moveTo(x0, rb[targetIdx].y0); ctx.lineTo(x0, rb[targetIdx].y1);
+      ctx.moveTo(x1, rb[targetIdx].y0); ctx.lineTo(x1, rb[targetIdx].y1);
       ctx.stroke();
     }
   }
-  // start markers on each echo's own row
+  // start markers on each echo's own row (locate by kind+echoIdx, not assumed offset)
   for (let i = 0; i < echoes.length; i++) {
-    const ridx = i + 1; // echo row
-    if (ridx >= rb.length) break;
+    let ridx = -1;
+    for (let k = 0; k < rows.length; k++) {
+      if (rows[k].kind === 'echo' && rows[k].echoIdx === i) { ridx = k; break; }
+    }
+    if (ridx < 0 || ridx >= rb.length) continue;
     const startBeat = parseStartBeat(echoes[i].start);
     if (startBeat == null) continue;
     const x = beatToX(startBeat, r);
@@ -318,16 +339,16 @@ function draw() {
     const rowH = rb[i].y1 - rb[i].y0 - 8;
     const noteH = Math.max(2, rowH / (pitchHi - pitchLo + 3));
     if (row.overlay) {
-      // combined: overlay rows that actually land in the output. Mirrors the
-      // "include original in MIDI" checkbox so the combined view matches what
-      // gets downloaded.
-      const includeOriginal = $('combine').checked;
+      // Combined output = every included polytime. Inputs are sources only,
+      // never in the final output, so they don't appear here.
       for (let j = 0; j < rows.length; j++) {
-        if (j === i || rows[j].overlay) continue;
-        if (j === 0 && !includeOriginal) continue;
-        ctx.fillStyle = rows[j].color || PALETTE[j % PALETTE.length];
+        const r2 = rows[j];
+        if (j === i || r2.overlay) continue;
+        if (r2.kind !== 'echo') continue;
+        if (echoes[r2.echoIdx]?.include === false) continue;
+        ctx.fillStyle = r2.color || PALETTE[j % PALETTE.length];
         ctx.globalAlpha = 0.7;
-        drawNotes(rows[j].notes, i, r, noteH);
+        drawNotes(r2.notes, i, r, noteH);
       }
       ctx.globalAlpha = 1.0;
     } else {
@@ -348,9 +369,35 @@ function draw() {
   ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
   ctx.strokeRect(padL, padT, plotW(r), plotH(r));
 }
+function applyRowCrops(notes, rowIdx) {
+  // Honor the per-row crop + the combined "global" crop from the player
+  // panel so what you see equals what you hear (and what you'd download
+  // if cropping ever extends to output). Notes straddling a boundary get
+  // clipped; fully-outside notes are dropped.
+  if (!notes || !notes.length) return notes;
+  const settings = typeof voiceSettings !== 'undefined' ? voiceSettings : null;
+  const s = settings ? settings.get(rowIdx) : null;
+  const global = (typeof combinedCropRange === 'function') ? combinedCropRange() : null;
+  const local = s ? parseCrop(s.crop) : null;
+  if (!local && !global && !(s && s.mute)) return notes;
+  if (s && s.mute) return [];
+  const out = [];
+  for (const n of notes) {
+    let on = n.on, off = n.off, kill = false;
+    for (const r of [local, global]) {
+      if (!r) continue;
+      if (off <= r[0] || on >= r[1]) { kill = true; break; }
+      on = Math.max(on, r[0]); off = Math.min(off, r[1]);
+    }
+    if (kill || off <= on) continue;
+    out.push({ midi: n.midi, on, off });
+  }
+  return out;
+}
 function drawNotes(notes, rowIdx, r, noteH) {
   if (!notes) return;
-  for (const n of notes) {
+  const filtered = applyRowCrops(notes, rowIdx);
+  for (const n of filtered) {
     if (n.off < xMin || n.on > xMax) continue;
     const x = beatToX(n.on, r);
     const w = Math.max(1, beatToX(n.off, r) - x);
@@ -411,7 +458,8 @@ window.addEventListener('mousemove', (e) => {
   if (!drag.moved && Math.abs(mx - drag.startX) > DRAG_THRESHOLD_PX) {
     drag.moved = true;
     if (drag.kind === 'pending') {
-      if (mode && mode.type === 'source' && drag.rowIdx === 0) {
+      const r2 = rows[drag.rowIdx];
+      if (mode && mode.type === 'source' && r2 && r2.kind === 'input') {
         drag.kind = 'drag-source';
       } else {
         drag.kind = 'pan';
@@ -424,6 +472,10 @@ window.addEventListener('mousemove', (e) => {
     const lo = Math.min(drag.startBeat, cur), hi = Math.max(drag.startBeat, cur);
     if (hi > lo) {
       echoes[mode.echoIdx].source = [lo, hi];
+      const startRow = rows[drag.rowIdx];
+      if (startRow && startRow.kind === 'input') {
+        echoes[mode.echoIdx].source_id = startRow.inputId;
+      }
       syncEchoUI(mode.echoIdx);
       draw();
     }
@@ -442,18 +494,23 @@ window.addEventListener('mouseup', (e) => {
     const mx = e.clientX - r.left;
     let beat = clipBeats(xToBeat(mx, r));
     if (mode && mode.type === 'source') {
-      if (drag.rowIdx !== 0) {
-        setMsg('click on the ORIGINAL row (top) to set source', true);
+      const clickedRow = rows[drag.rowIdx];
+      if (!clickedRow || clickedRow.kind !== 'input') {
+        setMsg('click on an INPUT row to set source', true);
       } else {
         beat = snapToOriginalNote(beat);
         if (pendingAnchor == null) {
           pendingAnchor = beat;
+          // Lock the source input on the first click; second click locks the range.
+          echoes[mode.echoIdx].source_id = clickedRow.inputId;
+          syncEchoUI(mode.echoIdx);
           draw();
         } else {
           const lo = Math.min(pendingAnchor, beat), hi = Math.max(pendingAnchor, beat);
           pendingAnchor = null;
           if (hi > lo) {
             echoes[mode.echoIdx].source = [lo, hi];
+            echoes[mode.echoIdx].source_id = clickedRow.inputId;
             syncEchoUI(mode.echoIdx);
             setMode(null);
             schedulePreview();
@@ -462,7 +519,8 @@ window.addEventListener('mouseup', (e) => {
         }
       }
     } else if (mode && mode.type === 'start') {
-      if (drag.rowIdx === 0) beat = snapToOriginalNote(beat);
+      const clickedRow = rows[drag.rowIdx];
+      if (clickedRow && clickedRow.kind === 'input') beat = snapToOriginalNote(beat);
       echoes[mode.echoIdx].start = beat.toFixed(2);
       syncEchoUI(mode.echoIdx);
       setMode(null);
@@ -497,10 +555,18 @@ window.addEventListener('keydown', (e) => {
 
 // ── echo strip state ───────────────────────────────────────────────────
 const echoes = [];  // [{scale, source:[s,e]|null, start, color}]
-function makeEcho() {
+function makeEcho(opts) {
+  opts = opts || {};
   const i = echoes.length;
-  return { scale: '3/2', source: null, start: (2 * (i+1)) + 'b',
-           color: PALETTE[i % PALETTE.length] };
+  return {
+    scale: opts.scale || '1',
+    source: null,
+    start: opts.start || '0',
+    color: PALETTE[i % PALETTE.length],
+    include: true,
+    source_id: opts.source_id != null ? opts.source_id
+             : (inputs[0] ? inputs[0].id : null),
+  };
 }
 function setMode(m) {
   mode = m;
@@ -526,11 +592,20 @@ function renderEchoes() {
     div.className = 'echo';
     div.dataset.idx = i;
     div.style.borderLeftColor = e.color;
+    const sourceOpts = ['<option value="">all inputs (merged)</option>']
+      .concat(inputs.map(inp => '<option value="'+inp.id+'"'+
+        (String(e.source_id||'')===String(inp.id)?' selected':'')+'>'+
+        inp.name.replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))+'</option>'))
+      .join('');
     div.innerHTML = `
+      <label class="inline" style="margin:0"><input type="checkbox" data-f="include"${e.include!==false?' checked':''}> on</label>
       <span class="swatch" style="background:${e.color}"></span>
       <span class="name">echo ${i+1}</span>
+      <label class="field">from
+        <select data-f="source_id" style="padding:3px 6px;background:#222;color:#eee;border:1px solid #444;border-radius:3px;font:inherit;max-width:140px">${sourceOpts}</select>
+      </label>
       <label class="field">scale<input data-f="scale" type="text" value="${e.scale}"></label>
-      <div class="field">source
+      <div class="field">range
         <div><input data-f="source" type="text" value="${e.source ? e.source[0].toFixed(2)+'..'+e.source[1].toFixed(2) : ''}" placeholder="all"><button class="mode" data-mode="source">pick</button></div>
       </div>
       <div class="field">start
@@ -539,7 +614,8 @@ function renderEchoes() {
       <button class="rm">×</button>`;
     echoesEl.appendChild(div);
     div.querySelectorAll('input[data-f]').forEach(inp => {
-      inp.addEventListener('input', () => {
+      const evt = (inp.type === 'checkbox') ? 'change' : 'input';
+      inp.addEventListener(evt, () => {
         const f = inp.dataset.f;
         if (f === 'source') {
           const v = inp.value.trim();
@@ -548,10 +624,18 @@ function renderEchoes() {
             if (isFinite(a) && isFinite(b) && b > a) e.source = [a, b];
             else e.source = null;
           } else e.source = null;
+        } else if (f === 'include') {
+          e.include = inp.checked;
         } else {
           e[f] = inp.value;
         }
         draw();
+        schedulePreview();
+      });
+    });
+    div.querySelectorAll('select[data-f]').forEach(sel => {
+      sel.addEventListener('change', () => {
+        e.source_id = sel.value ? +sel.value : null;
         schedulePreview();
       });
     });
@@ -592,14 +676,28 @@ $('addEcho').addEventListener('click', () => {
 
 // ── rows = original + per-echo + (combined if 2+) ──────────────────────
 function rebuildRows() {
-  rows = [{ label: 'original', notes: originalNotes, color: '#888' }];
+  rows = [];
+  // One row per input (in their list order). Greyed-out tone for excluded ones.
+  for (const inp of inputNotes) {
+    rows.push({
+      label: (inp.name || ('input '+inp.id)) + ' (source)',
+      notes: inp.notes || [],
+      color: '#9aa',
+      kind: 'input',
+      inputId: inp.id,
+    });
+  }
   for (let i = 0; i < echoes.length; i++) {
     const v = processedVoices && processedVoices[i+1];
-    rows.push({ label: 'echo '+(i+1), notes: v ? v.notes : [], color: echoes[i].color });
+    rows.push({
+      label: 'echo '+(i+1) + (echoes[i].include === false ? ' (off)' : ''),
+      notes: v ? v.notes : [],
+      color: echoes[i].include === false ? '#444' : echoes[i].color,
+      kind: 'echo',
+      echoIdx: i,
+    });
   }
-  if (echoes.length >= 2) {
-    rows.push({ label: 'combined', overlay: true });
-  }
+  if (rows.length) rows.push({ label: 'combined', overlay: true });
   if (typeof renderPlayVoices === 'function') renderPlayVoices();
   draw();
 }
@@ -613,13 +711,13 @@ function scaleLooksComplete(s) {
   return true;
 }
 function schedulePreview() {
-  if (!chosen || !echoes.length) { draw(); return; }
+  if (!inputs.length || !echoes.length) { draw(); return; }
   if (!echoes.every(e => scaleLooksComplete(e.scale))) { draw(); return; }
   clearTimeout(previewTimer);
   previewTimer = setTimeout(runPreview, 350);
 }
 async function runPreview() {
-  if (!chosen || !echoes.length) return;
+  if (!inputs.length || !echoes.length) return;
   const mine = ++previewJobId;
   const fd = buildFormData();
   try {
@@ -648,37 +746,120 @@ async function runPreview() {
 }
 function buildFormData() {
   const fd = new FormData();
-  fd.append('mid', chosen);
+  inputs.forEach((inp, i) => fd.append('mid_'+i, inp.file, inp.name));
+  fd.append('inputs', JSON.stringify(inputs.map(inp => ({
+    id: inp.id, name: inp.name, offset: Number(inp.offset) || 0,
+    kind: inp.kind,
+  }))));
   fd.append('tsig', $('tsig').value);
-  fd.append('combine', $('combine').checked ? '1' : '0');
+  fd.append('output_crop', $('outCrop').value);
   fd.append('echoes', JSON.stringify(echoes.map(e => ({
     scale: e.scale,
     source: e.source ? (e.source[0]+'..'+e.source[1]) : '',
     start: e.start || '0',
+    source_id: e.source_id == null ? null : Number(e.source_id),
+    include: e.include !== false,
   }))));
   return fd;
 }
 function setMsg(m, err) { setStatus(m, !!err); }
 $('tsig').addEventListener('input', schedulePreview);
-$('combine').addEventListener('change', () => { draw(); schedulePreview(); });
+$('outCrop').addEventListener('input', schedulePreview);
 
 
 
 
-async function pickFile(f){
+function addInput(file, opts) {
+  opts = opts || {};
+  const kind = opts.kind || 'file';
+  const name = opts.name || file.name || ('recording '+nextInputId+'.mid');
+  inputs.push({ id: nextInputId++, file, name, offset: 0, kind });
+}
+function addInputs(files, opts) {
+  for (const f of files) addInput(f, opts);
+  renderInputs();
+  refreshPreview();
+}
+function removeInput(id) {
+  const i = inputs.findIndex(x => x.id === id);
+  if (i < 0) return;
+  inputs.splice(i, 1);
+  renderInputs();
+  if (inputs.length === 0) {
+    originalNotes=[]; processedVoices=null; rebuildRows();
+    prEl.classList.add('empty'); dl.style.display='none';
+    setStatus('');
+  } else {
+    refreshPreview();
+  }
+}
+function renderInputs() {
+  // Echo "from" dropdowns enumerate inputs — refresh them when the list changes.
+  if (typeof renderEchoes === 'function' && echoes.length) renderEchoes();
+  const el = $('inputList');
+  el.innerHTML = '';
+  picked.textContent = inputs.length
+    ? inputs.length+' input'+(inputs.length>1?'s':'')+' loaded'
+    : '';
+  inputs.forEach((inp) => {
+    const div = document.createElement('div');
+    div.className = 'echo';
+    div.innerHTML =
+      '<span class="name" style="min-width:0">'+(inp.kind==='rec'?'🎹 ':'📄 ')+
+        inp.name.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))+'</span>'+
+      '<label class="field">offset (beats)<div><input data-off="'+inp.id+
+        '" type="number" step="0.5" value="'+inp.offset+
+        '" style="width:80px"></div></label>'+
+      '<button class="mode" data-copy="'+inp.id+'" '+
+        'title="Add a polytime with ratio 1 from this input (= a copy)">+ as copy</button>'+
+      '<button class="rm" data-rm="'+inp.id+'">×</button>';
+    el.appendChild(div);
+  });
+  el.querySelectorAll('input[data-off]').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const t = inputs.find(x => x.id === +inp.dataset.off);
+      if (t) { t.offset = parseFloat(inp.value) || 0; refreshPreview(); }
+    });
+  });
+  el.querySelectorAll('button[data-copy]').forEach(b => {
+    b.addEventListener('click', () => {
+      if (echoes.length >= 8) { setStatus('max 8 polytimes', true); return; }
+      echoes.push(makeEcho({ source_id: +b.dataset.copy, scale: '1' }));
+      renderEchoes();
+      rebuildRows();
+      schedulePreview();
+    });
+  });
+  el.querySelectorAll('button[data-rm]').forEach(b => {
+    b.addEventListener('click', () => removeInput(+b.dataset.rm));
+  });
+}
+async function refreshPreview() {
+  if (!inputs.length) return;
   const mine = ++jobId;
-  chosen=f; picked.textContent=f.name;
   originalNotes=[]; processedVoices=null;
   rebuildRows(); prEl.classList.add('empty');
   dl.style.display='none'; dlUrl=null; dlName=null;
   setStatus('loading preview...');
-  const fd=new FormData(); fd.append('mid', f);
+  const fd = new FormData();
+  inputs.forEach((inp, i) => fd.append('mid_'+i, inp.file, inp.name));
+  fd.append('inputs', JSON.stringify(inputs.map(inp => ({
+    id: inp.id, name: inp.name, offset: Number(inp.offset) || 0,
+    kind: inp.kind,
+  }))));
   try{
     const r=await fetch('/preview',{method:'POST',body:fd});
     const j=await r.json();
     if(mine !== jobId) return;
     if(!r.ok) throw new Error(j.error||'preview failed');
-    originalNotes = j.notes;
+    inputNotes = j.inputs || [];
+    // Flat union of included inputs — used by snap-to-note and by the player
+    // as a fallback when nothing else identifies the source.
+    originalNotes = [];
+    for (const inp of inputNotes) {
+      if (inp.include === false) continue;
+      for (const n of inp.notes) originalNotes.push(n);
+    }
     detectedBpm = j.bpm || 120;
     totalBeats = j.total_beats || 16;
     pitchLo = j.pitch_lo ?? 60;
@@ -689,7 +870,8 @@ async function pickFile(f){
     fitView();
     prEl.classList.remove('empty');
     $('tsig').placeholder='auto — detected '+j.detected_ts;
-    setStatus('detected time signature: '+j.detected_ts+' · '+j.notes.length+' notes');
+    const totalNotes = inputNotes.reduce((a, b) => a + (b.notes ? b.notes.length : 0), 0);
+    setStatus(inputs.length+' input(s) · '+j.detected_ts+' · '+totalNotes+' source notes');
     schedulePreview();
   }catch(e){
     if(mine !== jobId) return;
@@ -702,15 +884,18 @@ async function pickFile(f){
 ['dragenter','dragover','drop'].forEach(ev=>
   window.addEventListener(ev, e=>e.preventDefault()));
 drop.addEventListener('click',()=>file.click());
-file.addEventListener('change',e=>{if(e.target.files[0])pickFile(e.target.files[0]);});
+file.addEventListener('change',e=>{
+  addInputs(e.target.files);
+  file.value = '';
+});
 drop.addEventListener('dragenter',e=>{e.preventDefault();drop.classList.add('hover');});
 drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('hover');});
 drop.addEventListener('dragleave',e=>{drop.classList.remove('hover');});
 drop.addEventListener('drop',e=>{
   e.preventDefault();
   drop.classList.remove('hover');
-  const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];
-  if(f) pickFile(f);
+  const fs = e.dataTransfer && e.dataTransfer.files;
+  if (fs && fs.length) addInputs(fs);
 });
 
 dl.addEventListener('click',()=>{
@@ -749,13 +934,26 @@ const recBox=$('recBox'), recDevice=$('recDevice'), recBtn=$('recBtn'),
 let midiAccess=null, recording=false, recStart=0, recEvents=[], openNotes={},
     recTimer=null, activeInputs=[];
 
+// Permission isn't asked until the user actually wants to record (or hits
+// Play with a MIDI output selected). Until then we just show the panel.
 if (navigator.requestMIDIAccess) {
   recBox.style.display='block';
-  navigator.requestMIDIAccess().then(setupMidi, () => {
-    recDevice.textContent='permission denied';
-  });
+  recDevice.textContent='click ● Record to scan for devices';
+  recBtn.disabled=false;  // first click triggers the prompt
 } else {
   $('recNotSupported').style.display='block';
+}
+let midiRequestInFlight=null;
+function ensureMidiAccess() {
+  if (midiAccess) return Promise.resolve(midiAccess);
+  if (!navigator.requestMIDIAccess) return Promise.reject(new Error('no Web MIDI'));
+  if (midiRequestInFlight) return midiRequestInFlight;
+  midiRequestInFlight = navigator.requestMIDIAccess().then(setupMidi, (err) => {
+    recDevice.textContent='permission denied';
+    midiRequestInFlight = null;
+    throw err;
+  });
+  return midiRequestInFlight;
 }
 
 function setupMidi(access) {
@@ -763,6 +961,7 @@ function setupMidi(access) {
   refreshInputs();
   refreshOutputs();
   access.onstatechange=()=>{ refreshInputs(); refreshOutputs(); };
+  return access;
 }
 function refreshInputs() {
   for (const inp of activeInputs) inp.onmidimessage=null;
@@ -795,7 +994,16 @@ function onMidi(e) {
     recEvents.push({midi: data1, onMs: onT, offMs: t});
   }
 }
-recBtn.addEventListener('click', () => {
+recBtn.addEventListener('click', async () => {
+  if (!midiAccess) {
+    recStatus.textContent='requesting MIDI permission…';
+    try { await ensureMidiAccess(); }
+    catch { recStatus.textContent='MIDI permission denied'; return; }
+    if (!activeInputs.length) {
+      recStatus.textContent='no MIDI input — plug a keyboard, then click Record again';
+      return;
+    }
+  }
   recording=true; recEvents=[]; openNotes={}; recStart=performance.now();
   recBtn.disabled=true; recStop.disabled=false;
   recStatus.textContent='recording — play now';
@@ -820,9 +1028,10 @@ recStop.addEventListener('click', () => {
   }
   const bpm = Math.max(20, Math.min(400, parseFloat(recBpm.value) || 120));
   const blob = buildMidi(recEvents, bpm);
-  const f = new File([blob], 'recording.mid', {type: 'audio/midi'});
+  const name = 'recording '+nextInputId+'.mid';
+  const f = new File([blob], name, {type: 'audio/midi'});
   recStatus.textContent=`captured ${recEvents.length} notes`;
-  pickFile(f);
+  addInputs([f], {kind:'rec', name});
 });
 
 // Minimal Standard MIDI File writer (Type-1, one track) — produces a file
@@ -902,12 +1111,21 @@ const playVoices=$('playVoices');
 
 function parseCrop(s) {
   s = String(s || '').trim();
-  if (!s.includes('..')) return null;
-  const [a, b] = s.split('..').map(parseFloat);
+  if (!s) return null;
+  // Accept "0..4", "0-4", "0,4", "0 4", "0 to 4" — anything with two numbers.
+  const nums = s.match(/-?\\d+(\\.\\d+)?/g);
+  if (!nums || nums.length < 2) return null;
+  const a = parseFloat(nums[0]), b = parseFloat(nums[1]);
   if (!isFinite(a) || !isFinite(b) || b <= a) return null;
   return [a, b];
 }
+let lastVoicesSig = '';
 function renderPlayVoices() {
+  // Rebuilding wipes inputs (focus, mid-edit text). Only re-render when the
+  // row structure actually changes — typing a scale shouldn't reset crops.
+  const sig = rows.map(r => (r.overlay?'~':'')+r.label).join('|');
+  if (sig === lastVoicesSig) return;
+  lastVoicesSig = sig;
   playVoices.innerHTML = '';
   rows.forEach((row, i) => {
     if (!voiceSettings.has(i)) voiceSettings.set(i, { mute:false, crop:'' });
@@ -934,11 +1152,13 @@ function renderPlayVoices() {
   playVoices.querySelectorAll('input[data-mute]').forEach(el => {
     el.addEventListener('change', () => {
       voiceSettings.get(+el.dataset.mute).mute = !el.checked;
+      draw();
     });
   });
   playVoices.querySelectorAll('input[data-crop]').forEach(el => {
     el.addEventListener('input', () => {
       voiceSettings.get(+el.dataset.crop).crop = el.value;
+      draw();
     });
   });
 }
@@ -1050,12 +1270,15 @@ function collectPlayEvents() {
       evs.push({t:off, kind:'off', midi:n.midi});
     }
   };
-  // Combined "include original" toggle mirrors what's in the downloaded MIDI;
-  // when off we still let the user play the original explicitly via its own row.
-  push(originalNotes, 0);
-  for (let i=0;i<echoes.length;i++) {
-    if (processedVoices && processedVoices[i+1]) push(processedVoices[i+1].notes, i+1);
-  }
+  // Walk rows in order; respect each row's own include flag so the player
+  // matches what the combined view shows.
+  rows.forEach((row, idx) => {
+    if (row.overlay) return;
+    // Source rows are never in the output; the player follows the output.
+    if (row.kind !== 'echo') return;
+    if (echoes[row.echoIdx]?.include === false) return;
+    push(row.notes, idx);
+  });
   evs.sort((a,b)=> a.t-b.t || (a.kind==='off'?-1:1));
   return evs;
 }
@@ -1132,7 +1355,13 @@ function startPlaybackFrom(beatStart) {
     }
   }, scheduledEnd + 80);
   playTimers.push(endId);
-  playStatus.textContent = `playing · ${bpm.toFixed(0)} bpm · vel ${+playVolEl.value}`;
+  const cropSummary = [];
+  voiceSettings.forEach((s, idx) => {
+    if (s.mute) cropSummary.push((rows[idx]?.label||'?')+':mute');
+    else { const r = parseCrop(s.crop); if (r) cropSummary.push((rows[idx]?.label||'?')+':'+r[0]+'..'+r[1]); }
+  });
+  playStatus.textContent = `playing · ${bpm.toFixed(0)} bpm · vel ${+playVolEl.value}`
+    + (cropSummary.length ? ' · '+cropSummary.join(', ') : '');
   if (!playheadRaf) playheadRaf = requestAnimationFrame(tickPlayhead);
 }
 function pausePlayback() {
@@ -1156,7 +1385,11 @@ function stopPlayback() {
   playBtn.disabled = false; pauseBtn.disabled = true; stopBtn.disabled = true;
   playStatus.textContent = 'stopped';
 }
-playBtn.addEventListener('click', () => {
+playBtn.addEventListener('click', async () => {
+  if (!usingInternal() && !midiAccess) {
+    try { await ensureMidiAccess(); }
+    catch { setStatus('MIDI permission denied — pick "Internal synth"', true); return; }
+  }
   if (playState === 'paused') startPlaybackFrom(playPosBeats);
   else { clearTimers(); silenceAll(); startPlaybackFrom(0); }
 });
@@ -1255,6 +1488,222 @@ def _voices_from_midi(path: Path) -> tuple[list[dict], float, int, int]:
     return voices, max(max_end, 4.0), min(all_pitches), max(all_pitches)
 
 
+def _merge_inputs(items: list[dict], *, respect_include: bool = True) -> Path:
+    """Merge multiple input MIDIs into a single Type-1 file, applying each
+    item's `offset` (beats). When `respect_include` is True (the default),
+    items with `include=False` are dropped before merging.
+
+    The first input's ticks_per_beat is used as the target resolution; later
+    inputs' ticks are rescaled into it. Tempo / time-signature meta from the
+    first input are kept at tick 0; notes are merged into a single track.
+    """
+    import mido
+    if not items:
+        raise ValueError("no inputs to merge")
+    used = [it for it in items if (not respect_include or it.get("include", True))]
+    if not used:
+        # All excluded — emit an empty-but-valid MIDI so downstream doesn't crash.
+        used = [items[0]]
+    base = mido.MidiFile(str(used[0]["path"]))
+    ppq = base.ticks_per_beat
+    out_mf = mido.MidiFile(ticks_per_beat=ppq, type=1)
+    track = mido.MidiTrack()
+    out_mf.tracks.append(track)
+
+    header_meta: list["mido.Message"] = []
+    for msg in base.tracks[0] if base.tracks else []:
+        if msg.is_meta and msg.type in (
+            "set_tempo", "time_signature", "key_signature", "track_name",
+        ):
+            header_meta.append(msg.copy(time=0))
+
+    events: list[tuple[int, "mido.Message"]] = []  # (abs_tick, msg)
+    for it in used:
+        path, offset_beats = it["path"], it["offset"]
+        mf = mido.MidiFile(str(path))
+        scale = ppq / mf.ticks_per_beat
+        off_ticks = int(round(offset_beats * ppq))
+        for tr in mf.tracks:
+            absolute = 0
+            for msg in tr:
+                absolute += msg.time
+                if msg.type in ("note_on", "note_off"):
+                    events.append((
+                        int(round(absolute * scale)) + max(0, off_ticks),
+                        msg,
+                    ))
+    # note_off before note_on at the same tick (zero-gap legato)
+    def _ord(e):
+        t, m = e
+        if m.type == "note_off" or (m.type == "note_on" and m.velocity == 0):
+            return (t, 0)
+        return (t, 1)
+    events.sort(key=_ord)
+
+    prev = 0
+    for m in header_meta:
+        track.append(m)
+    if not any(m.type == "set_tempo" for m in header_meta):
+        track.append(mido.MetaMessage("set_tempo", tempo=500000, time=0))
+    for tick, msg in events:
+        track.append(msg.copy(time=tick - prev))
+        prev = tick
+    track.append(mido.MetaMessage("end_of_track", time=0))
+
+    fd, name = tempfile.mkstemp(suffix=".mid")
+    os.close(fd)
+    out_mf.save(name)
+    return Path(name)
+
+
+def _collect_inputs(fields: dict, meta_key: str = "inputs") -> list[dict]:
+    """Pull every mid_N file out of `fields`, attach the `inputs` JSON
+    metadata (offset, include, id, name), and write each to a temp file.
+    Returns a list of dicts with keys {path, offset, include, id, name}.
+    Caller owns cleanup of `path`."""
+    raw = (fields.get(meta_key) or b"[]").decode().strip()
+    try:
+        meta = json.loads(raw)
+    except json.JSONDecodeError:
+        meta = []
+    items: list[dict] = []
+    i = 0
+    while True:
+        f = fields.get(f"mid_{i}")
+        if not isinstance(f, tuple):
+            break
+        _, content = f
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as tmp:
+            tmp.write(content)
+            p = Path(tmp.name)
+        m = meta[i] if i < len(meta) and isinstance(meta[i], dict) else {}
+        try: off = float(m.get("offset", 0) or 0)
+        except (TypeError, ValueError): off = 0.0
+        items.append({
+            "path": p,
+            "offset": off,
+            "include": bool(m.get("include", True)),
+            "id": m.get("id", i + 1),
+            "name": m.get("name", p.name),
+        })
+        i += 1
+    if not items:
+        single = fields.get("mid")
+        if isinstance(single, tuple):
+            _, content = single
+            with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as tmp:
+                tmp.write(content)
+                items.append({
+                    "path": Path(tmp.name), "offset": 0.0,
+                    "include": True, "id": 1, "name": "input",
+                })
+    if not items:
+        raise ValueError("missing MIDI file")
+    return items
+
+
+def _input_beat_length(path: Path) -> float:
+    """Return the time, in beats, from tick 0 to the last note_off / event end."""
+    import mido
+    mf = mido.MidiFile(str(path))
+    ppq = mf.ticks_per_beat
+    max_tick = 0
+    for tr in mf.tracks:
+        absolute = 0
+        for msg in tr:
+            absolute += msg.time
+            if msg.type in ("note_on", "note_off"):
+                if absolute > max_tick:
+                    max_tick = absolute
+    return max_tick / ppq if ppq else 0.0
+
+
+def _parse_output_crop(s: str) -> tuple[float, float] | None:
+    """Parse "0..16" / "0-16" / "0,16" → (start, end) beats. None if invalid."""
+    import re
+    nums = re.findall(r"-?\d+(?:\.\d+)?", s or "")
+    if len(nums) < 2:
+        return None
+    a, b = float(nums[0]), float(nums[1])
+    if b <= a:
+        return None
+    return (a, b)
+
+
+def _trim_midi(path: Path, start_beats: float, end_beats: float) -> None:
+    """Clip every track in `path` to the beat range [start, end] in place.
+    Notes straddling either edge are split; meta events that fall before the
+    window (tempo, time-sig, track name) are anchored at tick 0 so the trimmed
+    file still has a sane header."""
+    import mido
+    mf = mido.MidiFile(str(path))
+    ppq = mf.ticks_per_beat
+    cs = int(round(start_beats * ppq))
+    ce = int(round(end_beats * ppq))
+    new_mf = mido.MidiFile(ticks_per_beat=ppq, type=mf.type)
+
+    for track in mf.tracks:
+        # Resolve to absolute time, pair note_on/off so we can clip cleanly.
+        absolute = 0
+        held: dict[tuple[int, int], tuple[int, int]] = {}  # (ch, note) → (on_tick, vel)
+        notes: list[tuple[int, int, int, int, int]] = []   # (on, off, ch, note, vel)
+        meta: list[tuple[int, "mido.Message"]] = []
+        for msg in track:
+            absolute += msg.time
+            if msg.type == "note_on" and msg.velocity > 0:
+                held[(msg.channel, msg.note)] = (absolute, msg.velocity)
+            elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
+                key = (msg.channel, msg.note)
+                if key in held:
+                    on_t, vel = held.pop(key)
+                    notes.append((on_t, absolute, msg.channel, msg.note, vel))
+            elif msg.type == "end_of_track":
+                pass  # we'll re-emit our own
+            else:
+                meta.append((absolute, msg))
+
+        out: list[tuple[int, "mido.Message"]] = []
+        for tick, msg in meta:
+            if tick < cs:
+                # Keep header-defining meta (tempo, time-sig, key, name) anchored at 0.
+                if msg.is_meta and msg.type in (
+                    "set_tempo", "time_signature", "key_signature", "track_name",
+                    "instrument_name",
+                ):
+                    out.append((0, msg))
+            elif tick < ce:
+                out.append((tick - cs, msg))
+        for on, off, ch, note, vel in notes:
+            if off <= cs or on >= ce:
+                continue
+            new_on = max(on, cs) - cs
+            new_off = min(off, ce) - cs
+            if new_off <= new_on:
+                continue
+            out.append((new_on, mido.Message("note_on", note=note, velocity=vel, channel=ch)))
+            out.append((new_off, mido.Message("note_off", note=note, velocity=0, channel=ch)))
+
+        # Stable order: meta < note_off < note_on at the same tick.
+        def _ord(item):
+            t, m = item
+            if m.is_meta: return (t, 0)
+            if m.type == "note_off" or (m.type == "note_on" and m.velocity == 0):
+                return (t, 1)
+            if m.type == "note_on": return (t, 2)
+            return (t, 3)
+        out.sort(key=_ord)
+
+        new_track = mido.MidiTrack()
+        prev = 0
+        for tick, msg in out:
+            new_track.append(msg.copy(time=tick - prev))
+            prev = tick
+        new_track.append(mido.MetaMessage("end_of_track", time=0))
+        new_mf.tracks.append(new_track)
+
+    new_mf.save(str(path))
+
+
 def parse_ts(s: str | None) -> TimeSignature | None:
     if not s:
         return None
@@ -1316,120 +1765,259 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_preview(self):
         fields = self._read_fields()
-        mid_field = fields.get("mid")
-        if not isinstance(mid_field, tuple):
-            raise ValueError("missing MIDI file")
-        _, mid_bytes = mid_field
-
-        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as f:
-            f.write(mid_bytes)
-            in_path = Path(f.name)
+        items = _collect_inputs(fields)
         try:
-            detected = detect_time_signature(in_path)
-            detected_bpm = detect_bpm(in_path)
-            ts = detected or TimeSignature(4, 4)
             from score_io.live.midi_file import load_mido
             from polytime import _flatten_score
             from model.events import Note, Chord
-            score = load_mido(str(in_path), time_signature=ts)
-            theme = _flatten_score(score)
-            # Flatten chords to individual notes so the client gets a uniform
-            # {midi, on, off} list.
-            notes_out = []
-            for e in theme.events:
-                on = float(e.offset)
-                off = on + float(e.duration.actual_beats)
-                if isinstance(e, Chord):
-                    for p in e.pitches:
-                        notes_out.append({"midi": p.midi, "on": on, "off": off})
-                elif isinstance(e, Note):
-                    notes_out.append({"midi": e.pitch.midi, "on": on, "off": off})
-            total_beats = max((n["off"] for n in notes_out), default=4.0)
-            pitches = [n["midi"] for n in notes_out] or [60, 72]
+            per_input: list[dict] = []
+            all_pitches: list[int] = []
+            max_end = 0.0
+            global_bpm: float | None = None
+            global_ts: TimeSignature | None = None
+            detected_any = False
+
+            for it in items:
+                detected = detect_time_signature(it["path"])
+                detected_bpm = detect_bpm(it["path"])
+                if detected:
+                    detected_any = True
+                ts_in = detected or TimeSignature(4, 4)
+                if global_ts is None:
+                    global_ts = ts_in
+                if global_bpm is None and detected_bpm:
+                    global_bpm = float(detected_bpm)
+
+                score = load_mido(str(it["path"]), time_signature=ts_in)
+                theme = _flatten_score(score)
+                notes_out = []
+                off_base = float(it["offset"])
+                for e in theme.events:
+                    on = float(e.offset) + off_base
+                    off = on + float(e.duration.actual_beats)
+                    if isinstance(e, Chord):
+                        for p in e.pitches:
+                            notes_out.append({"midi": p.midi, "on": on, "off": off})
+                    elif isinstance(e, Note):
+                        notes_out.append({"midi": e.pitch.midi, "on": on, "off": off})
+                for n in notes_out:
+                    all_pitches.append(n["midi"])
+                    if n["off"] > max_end:
+                        max_end = n["off"]
+                per_input.append({
+                    "id": int(it["id"]),
+                    "name": it["name"],
+                    "offset": off_base,
+                    "include": bool(it["include"]),
+                    "kind": it.get("kind", "file"),
+                    "notes": notes_out,
+                })
+
+            ts_final = global_ts or TimeSignature(4, 4)
+            if not all_pitches:
+                all_pitches = [60, 72]
         finally:
-            try: in_path.unlink()
-            except OSError: pass
+            for it in items:
+                try: it["path"].unlink()
+                except OSError: pass
 
         payload = {
-            "notes": notes_out,
-            "total_beats": total_beats,
-            "pitch_lo": min(pitches),
-            "pitch_hi": max(pitches),
-            "beats_per_bar": float(ts.beats_per_measure),
-            "bpm": float(detected_bpm) if detected_bpm else 120.0,
-            "detected_ts": f"{ts.numerator}/{ts.denominator}" +
-                           ("" if detected else " (default)"),
+            "inputs": per_input,
+            "total_beats": max(max_end, 4.0),
+            "pitch_lo": min(all_pitches),
+            "pitch_hi": max(all_pitches),
+            "beats_per_bar": float(ts_final.beats_per_measure),
+            "bpm": global_bpm or 120.0,
+            "detected_ts": f"{ts_final.numerator}/{ts_final.denominator}" +
+                           ("" if detected_any else " (default)"),
         }
         self._send(200, json.dumps(payload).encode("utf-8"),
                    "application/json; charset=utf-8")
 
     def _handle_process(self):
         fields = self._read_fields()
-        mid_field = fields.get("mid")
-        if not isinstance(mid_field, tuple):
-            raise ValueError("missing MIDI file")
-        filename, mid_bytes = mid_field
+        items = _collect_inputs(fields)
+        filename = items[0]["name"] if items else "input"
         tsig_str = (fields.get("tsig") or b"").decode().strip()
-        combine = (fields.get("combine") or b"1").decode().strip() == "1"
+        # Inputs are sources only in the new model — nothing from them goes
+        # directly into the output. Every output voice is a polytime (a
+        # ratio-1 polytime is just a copy of its source).
+        combine = False
+        out_crop_str = (fields.get("output_crop") or b"").decode().strip()
         echoes_raw = (fields.get("echoes") or b"[]").decode().strip()
         try:
             echoes_list = json.loads(echoes_raw)
         except json.JSONDecodeError as e:
             raise ValueError(f"bad echoes JSON: {e}")
         if not isinstance(echoes_list, list) or not echoes_list:
-            raise ValueError("provide at least one echo voice")
+            raise ValueError("add at least one polytime (or '+ as copy' an input)")
+        # Drop excluded echoes BEFORE the 8-voice check — that gate matters
+        # for what actually renders, not for what's in the UI.
+        echoes_list = [e for e in echoes_list if e.get("include", True)]
+        if not echoes_list:
+            raise ValueError("all echoes are switched off")
         if len(echoes_list) > 8:
             raise ValueError("max 8 echo voices")
 
         base_bpm = 120.0
-        scales = tuple(parse_scale(str(e.get("scale", "")).strip(), base_bpm)
-                       for e in echoes_list)
         stem = Path(filename or "input").stem
 
-        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as f:
-            f.write(mid_bytes)
-            in_path = Path(f.name)
+        # BPM/TS come from the first input — the user's chosen reference.
+        first_path = items[0]["path"]
+        detected_bpm = detect_bpm(first_path)
+        if detected_bpm:
+            base_bpm = detected_bpm
+        ts_override = parse_ts(tsig_str)
+        detected = detect_time_signature(first_path)
+        ts = ts_override or detected or TimeSignature(4, 4)
+        ts_label = f"{ts.numerator}/{ts.denominator}"
+        if ts_override: ts_label += " (override)"
+        elif not detected: ts_label += " (default)"
+
         out_mid = Path(tempfile.mkstemp(suffix=".mid")[1])
+        tmp_paths: list[Path] = []
 
         try:
-            detected_bpm = detect_bpm(in_path)
-            if detected_bpm:
-                base_bpm = detected_bpm
-                # Re-parse scales now that we know the file's tempo (only
-                # changes results for entries that used the `bpm` suffix).
-                scales = tuple(parse_scale(str(e.get("scale", "")).strip(), base_bpm)
-                               for e in echoes_list)
-            ts_override = parse_ts(tsig_str)
-            detected = detect_time_signature(in_path)
-            ts = ts_override or detected or TimeSignature(4, 4)
-            ts_label = f"{ts.numerator}/{ts.denominator}"
-            if ts_override:
-                ts_label += " (override)"
-            elif not detected:
-                ts_label += " (default)"
-
             cap = ts.beats_per_measure
-            ats = tuple(
-                _parse_when(str(e.get("start", "")).strip() or "0", cap)
-                for e in echoes_list
-            )
-            theme_ranges = tuple(
-                parse_range(str(e.get("source", "")).strip() or "", cap)
-                for e in echoes_list
-            )
-            mid_path = polytime(
-                in_path, at=ats[0], scales=scales, ats=ats,
-                out=out_mid, time_signature=ts,
-                combine=combine, theme_ranges=theme_ranges,
-            )
+            inputs_by_id = {int(it["id"]): it for it in items}
+            default_sid = int(items[0]["id"])
+
+            # Group polytimes by source input. Each group runs through polytime()
+            # against ONLY its source file, so an echo that picks source=A truly
+            # derives from A and never sees B's notes — no more merge bleed.
+            groups: dict[int, list[tuple[int, dict]]] = {}
+            for idx, e in enumerate(echoes_list):
+                sid = e.get("source_id")
+                try:
+                    sid = int(sid) if sid is not None else default_sid
+                except (TypeError, ValueError):
+                    sid = default_sid
+                if sid not in inputs_by_id:
+                    sid = default_sid
+                groups.setdefault(sid, []).append((idx, e))
+
+            echo_notes_by_idx: dict[int, list[dict]] = {}
+            for sid, group in groups.items():
+                inp = inputs_by_id[sid]
+                src_offset = Fraction(inp["offset"]).limit_denominator(96)
+                g_scales = tuple(
+                    parse_scale(str(e.get("scale", "")).strip(), base_bpm)
+                    for _, e in group
+                )
+                g_ats = tuple(
+                    _parse_when(str(e.get("start", "")).strip() or "0", cap)
+                    for _, e in group
+                )
+                # Picked ranges are in DISPLAY (output-timeline) beats, so they
+                # include `src_offset`. Convert to source-local before polytime.
+                g_ranges: list[tuple[Fraction, Fraction] | None] = []
+                for _, e in group:
+                    explicit = parse_range(
+                        str(e.get("source", "")).strip() or "", cap
+                    )
+                    if explicit is None:
+                        g_ranges.append(None)
+                    else:
+                        lo = explicit[0] - src_offset
+                        hi = explicit[1] - src_offset
+                        if hi <= lo or hi <= 0:
+                            g_ranges.append((Fraction(0), Fraction(0)))
+                        else:
+                            g_ranges.append((max(Fraction(0), lo), hi))
+
+                # Skip per-polytime ranges that landed on nothing — let the rest
+                # still render rather than failing the whole request.
+                runnable: list[tuple[int, Fraction, Fraction, tuple[Fraction, Fraction] | None]] = []
+                for (idx, _), s, a, rng in zip(group, g_scales, g_ats, g_ranges):
+                    if rng is not None and rng[1] <= rng[0]:
+                        echo_notes_by_idx[idx] = []
+                        continue
+                    runnable.append((idx, s, a, rng))
+                if not runnable:
+                    continue
+
+                tmp_out = Path(tempfile.mkstemp(suffix=".mid")[1])
+                tmp_paths.append(tmp_out)
+                try:
+                    polytime(
+                        inp["path"], at=runnable[0][2],
+                        scales=tuple(r[1] for r in runnable),
+                        ats=tuple(r[2] for r in runnable),
+                        out=tmp_out, time_signature=ts,
+                        combine=False,
+                        theme_ranges=tuple(r[3] for r in runnable),
+                    )
+                except ValueError as exc:
+                    # e.g. "theme range … contains no notes" — record empties.
+                    for idx, _, _, _ in runnable:
+                        echo_notes_by_idx[idx] = []
+                    continue
+                voices, _, _, _ = _voices_from_midi(tmp_out)
+                for (idx, _, _, _), v in zip(runnable, voices):
+                    echo_notes_by_idx[idx] = v["notes"]
+
+            # Build the final MIDI from scratch — one track per polytime, in the
+            # client-side order. No theme track (sources are not in output).
+            import mido
+            PPQ = 480
+            final_mf = mido.MidiFile(ticks_per_beat=PPQ, type=1)
+            meta = mido.MidiTrack()
+            meta.append(mido.MetaMessage(
+                "set_tempo", tempo=int(round(60_000_000 / base_bpm)), time=0,
+            ))
+            meta.append(mido.MetaMessage(
+                "time_signature",
+                numerator=ts.numerator, denominator=ts.denominator,
+                clocks_per_click=24, notated_32nd_notes_per_beat=8, time=0,
+            ))
+            meta.append(mido.MetaMessage("end_of_track", time=0))
+            final_mf.tracks.append(meta)
+
+            for idx in range(len(echoes_list)):
+                notes = echo_notes_by_idx.get(idx, [])
+                if not notes:
+                    continue
+                tr = mido.MidiTrack()
+                tr.append(mido.MetaMessage(
+                    "track_name", name=f"polytime {idx+1}", time=0,
+                ))
+                evs: list[tuple[int, "mido.Message"]] = []
+                for n in notes:
+                    on_tick = max(0, int(round(n["on"] * PPQ)))
+                    off_tick = max(on_tick + 1, int(round(n["off"] * PPQ)))
+                    evs.append((on_tick, mido.Message(
+                        "note_on", note=n["midi"], velocity=80,
+                    )))
+                    evs.append((off_tick, mido.Message(
+                        "note_off", note=n["midi"], velocity=0,
+                    )))
+                def _ord(e):
+                    t, m = e
+                    if m.type == "note_off" or (m.type == "note_on" and m.velocity == 0):
+                        return (t, 0)
+                    return (t, 1)
+                evs.sort(key=_ord)
+                prev = 0
+                for tick, msg in evs:
+                    tr.append(msg.copy(time=tick - prev))
+                    prev = tick
+                tr.append(mido.MetaMessage("end_of_track", time=0))
+                final_mf.tracks.append(tr)
+
+            final_mf.save(str(out_mid))
+            mid_path = out_mid
+            out_crop = _parse_output_crop(out_crop_str)
+            if out_crop:
+                _trim_midi(mid_path, out_crop[0], out_crop[1])
             mid_data = mid_path.read_bytes()
-            # Read the produced MIDI back to recover the per-track note streams
-            # — much simpler than threading them back through polytime().
             voices_payload, total_beats, pitch_lo, pitch_hi = _voices_from_midi(
                 mid_path
             )
         finally:
-            for p in (in_path, out_mid):
+            for it in items:
+                try: it["path"].unlink()
+                except OSError: pass
+            for p in (*tmp_paths, out_mid):
                 try: p.unlink()
                 except OSError: pass
 
