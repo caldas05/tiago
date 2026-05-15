@@ -125,6 +125,35 @@ INDEX_HTML = """<!doctype html>
 <div id="echoes"></div>
 <div class="modeHint" id="modeHint"></div>
 <div id="status"></div>
+<div id="playBox" style="margin-top:10px;padding:10px;border:1px solid #333;
+     border-radius:6px;background:#1f1f1f;display:none">
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <strong style="font-size:13px;color:#bbb">Live playback:</strong>
+    <select id="playOut" style="padding:6px 8px;background:#222;color:#eee;
+            border:1px solid #444;border-radius:4px;font:inherit;max-width:240px"></select>
+    <button id="playBtn" disabled>▶ Play</button>
+    <button id="pauseBtn" disabled style="background:#888">⏸ Pause</button>
+    <button id="stopBtn" disabled style="background:#a55;color:#fff">⏹ Stop</button>
+    <label class="inline">speed
+      <input id="playSpeed" type="range" min="0.25" max="2" step="0.05" value="1"
+             style="width:110px">
+      <span id="playSpeedVal" style="width:48px;color:#7af">1.00×</span>
+    </label>
+    <label class="inline">volume
+      <input id="playVol" type="range" min="0" max="127" step="1" value="100"
+             style="width:90px">
+      <span id="playVolVal" style="width:30px;color:#7af">100</span>
+    </label>
+    <label class="inline">
+      <input id="playLoop" type="checkbox"> loop
+    </label>
+    <span id="playStatus" style="font-size:12px;color:#aaa"></span>
+  </div>
+  <div id="playVoices" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;font-size:12px"></div>
+</div>
+<div id="playNotSupported" style="margin-top:6px;font-size:12px;color:#888;display:none">
+  Live playback requires Chrome, Edge, Opera, or Brave (Web MIDI API).
+</div>
 <div class="vizpane">
   <h3>piano roll — original on top, one row per echo (+ combined if 2+ echoes)</h3>
   <canvas id="pr" class="pr empty"></canvas>
@@ -144,6 +173,7 @@ let chosen=null, dlUrl=null, dlName=null, jobId=0, previewJobId=0;
 let originalNotes=[];   // notes from last /preview
 let echoMeta=null;      // {total_beats, pitch_lo, pitch_hi, beats_per_bar}
 let processedVoices=null; // result of latest /process (per echo notes), keyed by index
+let detectedBpm=120;    // from /preview; speed slider multiplies this
 
 function setStatus(msg, err=false){st.textContent=msg;st.className=err?'err':'';}
 
@@ -288,9 +318,13 @@ function draw() {
     const rowH = rb[i].y1 - rb[i].y0 - 8;
     const noteH = Math.max(2, rowH / (pitchHi - pitchLo + 3));
     if (row.overlay) {
-      // combined: overlay original + all echo rows
+      // combined: overlay rows that actually land in the output. Mirrors the
+      // "include original in MIDI" checkbox so the combined view matches what
+      // gets downloaded.
+      const includeOriginal = $('combine').checked;
       for (let j = 0; j < rows.length; j++) {
         if (j === i || rows[j].overlay) continue;
+        if (j === 0 && !includeOriginal) continue;
         ctx.fillStyle = rows[j].color || PALETTE[j % PALETTE.length];
         ctx.globalAlpha = 0.7;
         drawNotes(rows[j].notes, i, r, noteH);
@@ -299,6 +333,16 @@ function draw() {
     } else {
       ctx.fillStyle = row.color || PALETTE[i % PALETTE.length];
       drawNotes(row.notes, i, r, noteH);
+    }
+  }
+  // Playhead — vertical sweep line spanning every row.
+  if (playheadBeat != null) {
+    const x = beatToX(playheadBeat, r);
+    if (x >= padL - 1 && x <= r.width - padR + 1) {
+      ctx.strokeStyle = '#ffec5c'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, padT); ctx.lineTo(x, r.height - padB);
+      ctx.stroke();
     }
   }
   ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
@@ -556,6 +600,7 @@ function rebuildRows() {
   if (echoes.length >= 2) {
     rows.push({ label: 'combined', overlay: true });
   }
+  if (typeof renderPlayVoices === 'function') renderPlayVoices();
   draw();
 }
 
@@ -564,7 +609,7 @@ function scaleLooksComplete(s) {
   s = String(s || '').trim();
   if (!s) return false;
   // Reject trailing operators / dangling slashes like "3/" while typing.
-  if (/[\/*+\-^.]$/.test(s)) return false;
+  if (/[/*+\\-^.]$/.test(s)) return false;
   return true;
 }
 function schedulePreview() {
@@ -615,7 +660,7 @@ function buildFormData() {
 }
 function setMsg(m, err) { setStatus(m, !!err); }
 $('tsig').addEventListener('input', schedulePreview);
-$('combine').addEventListener('change', schedulePreview);
+$('combine').addEventListener('change', () => { draw(); schedulePreview(); });
 
 
 
@@ -634,6 +679,7 @@ async function pickFile(f){
     if(mine !== jobId) return;
     if(!r.ok) throw new Error(j.error||'preview failed');
     originalNotes = j.notes;
+    detectedBpm = j.bpm || 120;
     totalBeats = j.total_beats || 16;
     pitchLo = j.pitch_lo ?? 60;
     pitchHi = j.pitch_hi ?? 72;
@@ -715,7 +761,8 @@ if (navigator.requestMIDIAccess) {
 function setupMidi(access) {
   midiAccess=access;
   refreshInputs();
-  access.onstatechange=refreshInputs;
+  refreshOutputs();
+  access.onstatechange=()=>{ refreshInputs(); refreshOutputs(); };
 }
 function refreshInputs() {
   for (const inp of activeInputs) inp.onmidimessage=null;
@@ -832,6 +879,300 @@ function buildMidi(notes, bpm) {
   ];
   return new Uint8Array([...header, ...trackHdr, ...body]);
 }
+
+// ── MIDI playback (Web MIDI API) ────────────────────────────────────────
+// Plays whatever's currently in the piano roll (original + every echo) to a
+// chosen MIDI output port. setTimeout-based scheduler keeps pause/stop
+// responsive; on stop/pause we send note-offs for every held note plus an
+// all-notes-off CC so a hanging key can never strand a synth.
+const playOut=$('playOut'), playBtn=$('playBtn'), pauseBtn=$('pauseBtn'),
+      stopBtn=$('stopBtn'), playStatus=$('playStatus'),
+      playSpeedEl=$('playSpeed'), playVolEl=$('playVol'),
+      playSpeedVal=$('playSpeedVal'), playVolVal=$('playVolVal'),
+      playLoopEl=$('playLoop');
+let midiOuts=[], playState='stopped', playPosBeats=0, playTimers=[];
+let playStartWall=0, playBpmAtStart=120;
+const heldNotes=new Set();
+const INTERNAL_ID='__internal__';
+let audioCtx=null;
+const liveVoices=new Map();  // midi → {osc, gain} for the internal synth
+const voiceSettings=new Map();  // rowIdx → {mute, crop:"a..b"}
+let playheadBeat=null, playheadRaf=null;
+const playVoices=$('playVoices');
+
+function parseCrop(s) {
+  s = String(s || '').trim();
+  if (!s.includes('..')) return null;
+  const [a, b] = s.split('..').map(parseFloat);
+  if (!isFinite(a) || !isFinite(b) || b <= a) return null;
+  return [a, b];
+}
+function renderPlayVoices() {
+  playVoices.innerHTML = '';
+  rows.forEach((row, i) => {
+    if (!voiceSettings.has(i)) voiceSettings.set(i, { mute:false, crop:'' });
+    const s = voiceSettings.get(i);
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;gap:8px;align-items:center';
+    // No mute checkbox on the combined row — toggling individual voices off
+    // is what mute is for; the combined row is just a global crop.
+    const muteCell = row.overlay
+      ? '<span style="display:inline-block;width:13px"></span>'
+      : '<input type="checkbox" data-mute="'+i+'"'+(s.mute?'':' checked')+'>';
+    div.innerHTML =
+      muteCell +
+      '<span style="display:inline-block;width:12px;height:12px;background:'+
+        (row.color||'#888')+';border-radius:2px;opacity:'+(row.overlay?0.4:1)+'"></span>'+
+      '<span style="min-width:80px;color:'+(row.overlay?'#888':'#ccc')+'">'+
+        row.label + (row.overlay?' (global)':'') + '</span>'+
+      '<input type="text" data-crop="'+i+'" value="'+s.crop+
+        '" placeholder="full · or e.g. 0..8 (beats)" '+
+        'style="width:170px;padding:3px 6px;background:#222;color:#eee;'+
+        'border:1px solid #444;border-radius:3px;font:inherit">';
+    playVoices.appendChild(div);
+  });
+  playVoices.querySelectorAll('input[data-mute]').forEach(el => {
+    el.addEventListener('change', () => {
+      voiceSettings.get(+el.dataset.mute).mute = !el.checked;
+    });
+  });
+  playVoices.querySelectorAll('input[data-crop]').forEach(el => {
+    el.addEventListener('input', () => {
+      voiceSettings.get(+el.dataset.crop).crop = el.value;
+    });
+  });
+}
+function combinedCropRange() {
+  // Combined row gets its own crop entry too — keyed by the combined row's
+  // index; if absent or invalid, no crop is applied to the merged output.
+  const lastIdx = rows.length - 1;
+  if (lastIdx < 0 || !rows[lastIdx].overlay) return null;
+  const s = voiceSettings.get(lastIdx);
+  return s ? parseCrop(s.crop) : null;
+}
+
+playSpeedEl.addEventListener('input', () => {
+  playSpeedVal.textContent = (+playSpeedEl.value).toFixed(2)+'×';
+  if (playState==='playing') {
+    const wasPaused = true;
+    pausePlayback();
+    startPlaybackFrom(playPosBeats);
+  }
+});
+playVolEl.addEventListener('input', () => {
+  playVolVal.textContent = playVolEl.value;
+});
+
+function buildOutputList() {
+  const prev = playOut.value;
+  playOut.innerHTML = '';
+  const intOpt = document.createElement('option');
+  intOpt.value = INTERNAL_ID;
+  intOpt.textContent = '🔊 Internal synth (this tab)';
+  playOut.appendChild(intOpt);
+  for (const o of midiOuts) {
+    const opt=document.createElement('option');
+    opt.value=o.id; opt.textContent=o.name;
+    playOut.appendChild(opt);
+  }
+  if (prev && (prev === INTERNAL_ID || midiOuts.some(o=>o.id===prev))) {
+    playOut.value = prev;
+  }
+  playBtn.disabled = false;
+}
+function refreshOutputs() {
+  midiOuts = midiAccess ? [...midiAccess.outputs.values()] : [];
+  buildOutputList();
+  if (playState === 'stopped' || playState === 'paused') playBtn.disabled = false;
+}
+function selectedOutput() {
+  return midiOuts.find(o => o.id === playOut.value) || null;
+}
+function usingInternal() { return playOut.value === INTERNAL_ID; }
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+function midiToHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+function internalNoteOn(midi, vel) {
+  const ctx = ensureAudio();
+  const t = ctx.currentTime;
+  // One voice per pitch — retrigger if already on.
+  internalNoteOff(midi, true);
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.value = midiToHz(midi);
+  const gain = ctx.createGain();
+  const peak = (vel / 127) * 0.18;  // keep polyphony from clipping
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(peak, t + 0.005);
+  gain.gain.exponentialRampToValueAtTime(peak * 0.6, t + 0.25);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(t);
+  liveVoices.set(midi, { osc, gain });
+}
+function internalNoteOff(midi, immediate=false) {
+  const v = liveVoices.get(midi);
+  if (!v) return;
+  liveVoices.delete(midi);
+  const ctx = audioCtx;
+  if (!ctx) { try{v.osc.stop();}catch(e){} return; }
+  const t = ctx.currentTime;
+  const rel = immediate ? 0.005 : 0.08;
+  try {
+    v.gain.gain.cancelScheduledValues(t);
+    v.gain.gain.setValueAtTime(Math.max(0.0001, v.gain.gain.value), t);
+    v.gain.gain.exponentialRampToValueAtTime(0.0001, t + rel);
+    v.osc.stop(t + rel + 0.02);
+  } catch (e) {}
+}
+function internalAllOff() {
+  for (const m of [...liveVoices.keys()]) internalNoteOff(m, true);
+}
+function collectPlayEvents() {
+  const evs = [];
+  const global = combinedCropRange();
+  const push = (notes, rowIdx) => {
+    if (!notes) return;
+    const s = voiceSettings.get(rowIdx);
+    if (s && s.mute) return;
+    const local = s ? parseCrop(s.crop) : null;
+    for (const n of notes) {
+      let on = n.on, off = n.off;
+      for (const r of [local, global]) {
+        if (!r) continue;
+        if (off <= r[0] || on >= r[1]) { on = off = null; break; }
+        on = Math.max(on, r[0]); off = Math.min(off, r[1]);
+      }
+      if (on == null || off <= on) continue;
+      evs.push({t:on, kind:'on', midi:n.midi});
+      evs.push({t:off, kind:'off', midi:n.midi});
+    }
+  };
+  // Combined "include original" toggle mirrors what's in the downloaded MIDI;
+  // when off we still let the user play the original explicitly via its own row.
+  push(originalNotes, 0);
+  for (let i=0;i<echoes.length;i++) {
+    if (processedVoices && processedVoices[i+1]) push(processedVoices[i+1].notes, i+1);
+  }
+  evs.sort((a,b)=> a.t-b.t || (a.kind==='off'?-1:1));
+  return evs;
+}
+function silenceAll() {
+  if (usingInternal()) { internalAllOff(); heldNotes.clear(); return; }
+  const out = selectedOutput();
+  if (!out) { heldNotes.clear(); return; }
+  for (const m of heldNotes) out.send([0x80, m, 0]);
+  out.send([0xb0, 123, 0]);  // all-notes-off (channel 0)
+  heldNotes.clear();
+}
+function clearTimers() {
+  for (const id of playTimers) clearTimeout(id);
+  playTimers = [];
+}
+function tickPlayhead() {
+  if (playState !== 'playing') {
+    playheadBeat = null; playheadRaf = null; draw(); return;
+  }
+  const elapsed = (performance.now() - playStartWall) / 1000 * (playBpmAtStart / 60);
+  playheadBeat = playPosBeats + elapsed;
+  draw();
+  playheadRaf = requestAnimationFrame(tickPlayhead);
+}
+function stopPlayhead() {
+  if (playheadRaf) cancelAnimationFrame(playheadRaf);
+  playheadRaf = null;
+  playheadBeat = null;
+  draw();
+}
+function startPlaybackFrom(beatStart) {
+  const internal = usingInternal();
+  const out = internal ? null : selectedOutput();
+  if (!internal && !out) { setStatus('select a MIDI output', true); return; }
+  if (internal) ensureAudio();
+  const evs = collectPlayEvents();
+  if (!evs.length) { setStatus('nothing to play — drop a MIDI first', true); return; }
+  const speed = +playSpeedEl.value;
+  const bpm = detectedBpm * speed;
+  const secPerBeat = 60 / bpm;
+  playStartWall = performance.now();
+  playBpmAtStart = bpm;
+  playPosBeats = beatStart;
+  playState = 'playing';
+  playBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
+  let scheduledEnd = 0;
+  for (const e of evs) {
+    if (e.t < beatStart) continue;
+    const delay = (e.t - beatStart) * secPerBeat * 1000;
+    if (delay > scheduledEnd) scheduledEnd = delay;
+    const id = setTimeout(() => {
+      if (playState !== 'playing') return;
+      const vel = Math.max(1, +playVolEl.value);
+      if (e.kind === 'on') {
+        if (internal) internalNoteOn(e.midi, vel);
+        else out.send([0x90, e.midi, vel]);
+        heldNotes.add(e.midi);
+      } else {
+        if (internal) internalNoteOff(e.midi);
+        else out.send([0x80, e.midi, 0]);
+        heldNotes.delete(e.midi);
+      }
+    }, delay);
+    playTimers.push(id);
+  }
+  const endId = setTimeout(() => {
+    if (playState !== 'playing') return;
+    silenceAll();
+    if (playLoopEl.checked) {
+      clearTimers();
+      startPlaybackFrom(0);
+    } else {
+      stopPlayback();
+    }
+  }, scheduledEnd + 80);
+  playTimers.push(endId);
+  playStatus.textContent = `playing · ${bpm.toFixed(0)} bpm · vel ${+playVolEl.value}`;
+  if (!playheadRaf) playheadRaf = requestAnimationFrame(tickPlayhead);
+}
+function pausePlayback() {
+  if (playState !== 'playing') return;
+  const elapsedBeats = (performance.now() - playStartWall) / 1000 *
+                       (playBpmAtStart / 60);
+  playPosBeats += elapsedBeats;
+  clearTimers();
+  silenceAll();
+  playState = 'paused';
+  stopPlayhead();
+  playBtn.disabled = false; pauseBtn.disabled = true; stopBtn.disabled = false;
+  playStatus.textContent = `paused at beat ${playPosBeats.toFixed(2)}`;
+}
+function stopPlayback() {
+  clearTimers();
+  silenceAll();
+  playState = 'stopped';
+  playPosBeats = 0;
+  stopPlayhead();
+  playBtn.disabled = false; pauseBtn.disabled = true; stopBtn.disabled = true;
+  playStatus.textContent = 'stopped';
+}
+playBtn.addEventListener('click', () => {
+  if (playState === 'paused') startPlaybackFrom(playPosBeats);
+  else { clearTimers(); silenceAll(); startPlaybackFrom(0); }
+});
+pauseBtn.addEventListener('click', pausePlayback);
+stopBtn.addEventListener('click', stopPlayback);
+playOut.addEventListener('change', () => {
+  if (playState === 'playing') {
+    pausePlayback();
+    startPlaybackFrom(playPosBeats);
+  }
+});
+window.addEventListener('beforeunload', () => { try { silenceAll(); } catch(e) {} });
+
+// Playback panel is always available (internal synth needs only Web Audio).
+$('playBox').style.display='block';
+refreshOutputs();
 </script>
 </body></html>
 """
@@ -985,6 +1326,7 @@ class Handler(BaseHTTPRequestHandler):
             in_path = Path(f.name)
         try:
             detected = detect_time_signature(in_path)
+            detected_bpm = detect_bpm(in_path)
             ts = detected or TimeSignature(4, 4)
             from score_io.live.midi_file import load_mido
             from polytime import _flatten_score
@@ -1014,6 +1356,7 @@ class Handler(BaseHTTPRequestHandler):
             "pitch_lo": min(pitches),
             "pitch_hi": max(pitches),
             "beats_per_bar": float(ts.beats_per_measure),
+            "bpm": float(detected_bpm) if detected_bpm else 120.0,
             "detected_ts": f"{ts.numerator}/{ts.denominator}" +
                            ("" if detected else " (default)"),
         }
