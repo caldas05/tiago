@@ -369,18 +369,16 @@ function draw() {
   ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
   ctx.strokeRect(padL, padT, plotW(r), plotH(r));
 }
-function applyRowCrops(notes, rowIdx) {
+function applyRowCrops(notes, pid) {
   // Honor the per-row crop + the combined "global" crop from the player
   // panel so what you see equals what you hear (and what you'd download
   // if cropping ever extends to output). Notes straddling a boundary get
   // clipped; fully-outside notes are dropped.
   if (!notes || !notes.length) return notes;
-  const settings = typeof voiceSettings !== 'undefined' ? voiceSettings : null;
-  const s = settings ? settings.get(rowIdx) : null;
-  const global = (typeof combinedCropRange === 'function') ? combinedCropRange() : null;
+  const s = pid ? voiceSettings.get(pid) : null;
+  const global = combinedCropRange();
   const local = s ? parseCrop(s.crop) : null;
-  if (!local && !global && !(s && s.mute)) return notes;
-  if (s && s.mute) return [];
+  if (!local && !global) return notes;
   const out = [];
   for (const n of notes) {
     let on = n.on, off = n.off, kill = false;
@@ -396,7 +394,7 @@ function applyRowCrops(notes, rowIdx) {
 }
 function drawNotes(notes, rowIdx, r, noteH) {
   if (!notes) return;
-  const filtered = applyRowCrops(notes, rowIdx);
+  const filtered = applyRowCrops(notes, rows[rowIdx] && rows[rowIdx].pid);
   for (const n of filtered) {
     if (n.off < xMin || n.on > xMax) continue;
     const x = beatToX(n.on, r);
@@ -554,11 +552,13 @@ window.addEventListener('keydown', (e) => {
 });
 
 // ── echo strip state ───────────────────────────────────────────────────
-const echoes = [];  // [{scale, source:[s,e]|null, start, color}]
+const echoes = [];  // [{id, scale, source:[s,e]|null, start, color, include, source_id}]
+let nextEchoId = 1;
 function makeEcho(opts) {
   opts = opts || {};
   const i = echoes.length;
   return {
+    id: nextEchoId++,
     scale: opts.scale || '1',
     source: null,
     start: opts.start || '0',
@@ -675,9 +675,12 @@ $('addEcho').addEventListener('click', () => {
 });
 
 // ── rows = original + per-echo + (combined if 2+) ──────────────────────
+// Each row carries a stable `pid` (player id). voiceSettings is keyed by pid
+// so per-voice crop persists across row insertions/removals — keying by array
+// index meant removing an upstream row would shift state onto its neighbour
+// (e.g. a stale crop silently muting an echo).
 function rebuildRows() {
   rows = [];
-  // One row per input (in their list order). Greyed-out tone for excluded ones.
   for (const inp of inputNotes) {
     rows.push({
       label: (inp.name || ('input '+inp.id)) + ' (source)',
@@ -685,6 +688,7 @@ function rebuildRows() {
       color: '#9aa',
       kind: 'input',
       inputId: inp.id,
+      pid: 'src:'+inp.id,
     });
   }
   for (let i = 0; i < echoes.length; i++) {
@@ -695,9 +699,16 @@ function rebuildRows() {
       color: echoes[i].include === false ? '#444' : echoes[i].color,
       kind: 'echo',
       echoIdx: i,
+      pid: 'echo:'+echoes[i].id,
     });
   }
-  if (rows.length) rows.push({ label: 'combined', overlay: true });
+  if (rows.length) rows.push({ label: 'combined', overlay: true, pid: 'combined' });
+  // Drop voiceSettings whose pid is no longer present so removed rows don't
+  // leave behind state that can re-attach to a future row.
+  const live = new Set(rows.map(r => r.pid));
+  for (const k of [...voiceSettings.keys()]) {
+    if (!live.has(k)) voiceSettings.delete(k);
+  }
   if (typeof renderPlayVoices === 'function') renderPlayVoices();
   draw();
 }
@@ -1105,7 +1116,7 @@ const heldNotes=new Set();
 const INTERNAL_ID='__internal__';
 let audioCtx=null;
 const liveVoices=new Map();  // midi → {osc, gain} for the internal synth
-const voiceSettings=new Map();  // rowIdx → {mute, crop:"a..b"}
+const voiceSettings=new Map();  // row.pid → {crop:"a..b"}
 let playheadBeat=null, playheadRaf=null;
 const playVoices=$('playVoices');
 
@@ -1123,51 +1134,39 @@ let lastVoicesSig = '';
 function renderPlayVoices() {
   // Rebuilding wipes inputs (focus, mid-edit text). Only re-render when the
   // row structure actually changes — typing a scale shouldn't reset crops.
-  const sig = rows.map(r => (r.overlay?'~':'')+r.label).join('|');
+  // Source rows aren't played (collectPlayEvents skips them), so they don't
+  // appear here; an echo's on/off lives in the echo strip — one source of
+  // truth, no redundant mute control.
+  const playable = rows.filter(r => r.overlay || r.kind === 'echo');
+  const sig = playable.map(r => r.pid+'|'+r.label).join('::');
   if (sig === lastVoicesSig) return;
   lastVoicesSig = sig;
   playVoices.innerHTML = '';
-  rows.forEach((row, i) => {
-    if (!voiceSettings.has(i)) voiceSettings.set(i, { mute:false, crop:'' });
-    const s = voiceSettings.get(i);
+  playable.forEach(row => {
+    if (!voiceSettings.has(row.pid)) voiceSettings.set(row.pid, { crop:'' });
+    const s = voiceSettings.get(row.pid);
     const div = document.createElement('div');
     div.style.cssText = 'display:flex;gap:8px;align-items:center';
-    // No mute checkbox on the combined row — toggling individual voices off
-    // is what mute is for; the combined row is just a global crop.
-    const muteCell = row.overlay
-      ? '<span style="display:inline-block;width:13px"></span>'
-      : '<input type="checkbox" data-mute="'+i+'"'+(s.mute?'':' checked')+'>';
     div.innerHTML =
-      muteCell +
       '<span style="display:inline-block;width:12px;height:12px;background:'+
         (row.color||'#888')+';border-radius:2px;opacity:'+(row.overlay?0.4:1)+'"></span>'+
       '<span style="min-width:80px;color:'+(row.overlay?'#888':'#ccc')+'">'+
         row.label + (row.overlay?' (global)':'') + '</span>'+
-      '<input type="text" data-crop="'+i+'" value="'+s.crop+
+      '<input type="text" data-crop="'+row.pid+'" value="'+s.crop+
         '" placeholder="full · or e.g. 0..8 (beats)" '+
         'style="width:170px;padding:3px 6px;background:#222;color:#eee;'+
         'border:1px solid #444;border-radius:3px;font:inherit">';
     playVoices.appendChild(div);
   });
-  playVoices.querySelectorAll('input[data-mute]').forEach(el => {
-    el.addEventListener('change', () => {
-      voiceSettings.get(+el.dataset.mute).mute = !el.checked;
-      draw();
-    });
-  });
   playVoices.querySelectorAll('input[data-crop]').forEach(el => {
     el.addEventListener('input', () => {
-      voiceSettings.get(+el.dataset.crop).crop = el.value;
-      draw();
+      const s = voiceSettings.get(el.dataset.crop);
+      if (s) { s.crop = el.value; draw(); }
     });
   });
 }
 function combinedCropRange() {
-  // Combined row gets its own crop entry too — keyed by the combined row's
-  // index; if absent or invalid, no crop is applied to the merged output.
-  const lastIdx = rows.length - 1;
-  if (lastIdx < 0 || !rows[lastIdx].overlay) return null;
-  const s = voiceSettings.get(lastIdx);
+  const s = voiceSettings.get('combined');
   return s ? parseCrop(s.crop) : null;
 }
 
@@ -1253,12 +1252,15 @@ function internalAllOff() {
 function collectPlayEvents() {
   const evs = [];
   const global = combinedCropRange();
-  const push = (notes, rowIdx) => {
-    if (!notes) return;
-    const s = voiceSettings.get(rowIdx);
-    if (s && s.mute) return;
+  // Source rows are never in the output; the player follows the output.
+  // An echo's on/off lives solely on the echo's `include` flag (echo strip).
+  for (const row of rows) {
+    if (row.overlay || row.kind !== 'echo') continue;
+    if (echoes[row.echoIdx]?.include === false) continue;
+    if (!row.notes) continue;
+    const s = voiceSettings.get(row.pid);
     const local = s ? parseCrop(s.crop) : null;
-    for (const n of notes) {
+    for (const n of row.notes) {
       let on = n.on, off = n.off;
       for (const r of [local, global]) {
         if (!r) continue;
@@ -1269,16 +1271,7 @@ function collectPlayEvents() {
       evs.push({t:on, kind:'on', midi:n.midi});
       evs.push({t:off, kind:'off', midi:n.midi});
     }
-  };
-  // Walk rows in order; respect each row's own include flag so the player
-  // matches what the combined view shows.
-  rows.forEach((row, idx) => {
-    if (row.overlay) return;
-    // Source rows are never in the output; the player follows the output.
-    if (row.kind !== 'echo') return;
-    if (echoes[row.echoIdx]?.include === false) return;
-    push(row.notes, idx);
-  });
+  }
   evs.sort((a,b)=> a.t-b.t || (a.kind==='off'?-1:1));
   return evs;
 }
@@ -1356,9 +1349,10 @@ function startPlaybackFrom(beatStart) {
   }, scheduledEnd + 80);
   playTimers.push(endId);
   const cropSummary = [];
-  voiceSettings.forEach((s, idx) => {
-    if (s.mute) cropSummary.push((rows[idx]?.label||'?')+':mute');
-    else { const r = parseCrop(s.crop); if (r) cropSummary.push((rows[idx]?.label||'?')+':'+r[0]+'..'+r[1]); }
+  const labelByPid = new Map(rows.map(r => [r.pid, r.label]));
+  voiceSettings.forEach((s, pid) => {
+    const r = parseCrop(s.crop);
+    if (r) cropSummary.push((labelByPid.get(pid)||'?')+':'+r[0]+'..'+r[1]);
   });
   playStatus.textContent = `playing · ${bpm.toFixed(0)} bpm · vel ${+playVolEl.value}`
     + (cropSummary.length ? ' · '+cropSummary.join(', ') : '');
@@ -1862,11 +1856,17 @@ class Handler(BaseHTTPRequestHandler):
         base_bpm = 120.0
         stem = Path(filename or "input").stem
 
-        # BPM/TS come from the first input — the user's chosen reference.
+        # BPM: first input that actually carries a tempo meta wins (mirrors
+        # _handle_meta, so the preview-reported BPM and the rendered BPM
+        # agree — otherwise an untempo'd first input made the render
+        # silently fall back to 120 while the preview used a later file's
+        # tempo). TS still comes from the first input as the reference.
+        for it in items:
+            bpm_here = detect_bpm(it["path"])
+            if bpm_here:
+                base_bpm = float(bpm_here)
+                break
         first_path = items[0]["path"]
-        detected_bpm = detect_bpm(first_path)
-        if detected_bpm:
-            base_bpm = detected_bpm
         ts_override = parse_ts(tsig_str)
         detected = detect_time_signature(first_path)
         ts = ts_override or detected or TimeSignature(4, 4)
