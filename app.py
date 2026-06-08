@@ -124,7 +124,8 @@ INDEX_HTML = """<!doctype html>
   </div>
 </div>
 <div id="recNotSupported" style="margin-top:6px;font-size:12px;color:#888;display:none">
-  MIDI keyboard input requires Chrome, Edge, Opera, or Brave (Web MIDI API).
+  MIDI keyboard recording isn't available in this browser (Safari / Firefox don't ship the Web MIDI API).
+  Everything else works — drop a <code>.mid</code> file above. For keyboard recording, reopen in Chrome / Edge / Brave.
 </div>
 <div class="row">
   <button id="addEcho">+ add polytime</button>
@@ -175,9 +176,6 @@ INDEX_HTML = """<!doctype html>
     <span id="playStatus" style="font-size:12px;color:#aaa"></span>
   </div>
   <div id="playVoices" style="display:none"></div>
-</div>
-<div id="playNotSupported" style="margin-top:6px;font-size:12px;color:#888;display:none">
-  Live playback requires Chrome, Edge, Opera, or Brave (Web MIDI API).
 </div>
 <div class="vizpane">
   <h3>piano roll</h3>
@@ -2313,11 +2311,27 @@ def _watchdog():
             os._exit(0)
 
 
+def _open_in_chromium(url: str) -> None:
+    """Prefer a Web-MIDI-capable browser (Chrome / Edge / Brave / Chromium).
+    Safari and Firefox don't support the MIDI API, so the keyboard panel and
+    live-playback features silently degrade there — bad first-run experience.
+    Falls back to the OS default if none of the preferred browsers is
+    registered with Python's webbrowser module."""
+    for name in ("chrome", "google-chrome", "chromium", "msedge",
+                 "microsoft-edge", "brave"):
+        try:
+            webbrowser.get(name).open_new_tab(url)
+            return
+        except webbrowser.Error:
+            pass
+    webbrowser.open_new_tab(url)
+
+
 def main():
     port = free_port()
     url = f"http://127.0.0.1:{port}"
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    threading.Timer(0.4, lambda: webbrowser.open_new_tab(url)).start()
+    threading.Timer(0.4, lambda: _open_in_chromium(url)).start()
     threading.Thread(target=_watchdog, daemon=True).start()
     print(f"polytime running at {url}  (Ctrl+C to stop)")
     try:
