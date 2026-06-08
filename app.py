@@ -44,8 +44,8 @@ INDEX_HTML = """<!doctype html>
 <style>
  body{font-family:system-ui,sans-serif;margin:0;padding:18px;background:#1a1a1a;color:#eee}
  h1{margin:0 0 14px;font-size:20px}
- #drop{border:2px dashed #555;border-radius:8px;padding:24px;text-align:center;
-       cursor:pointer;background:#222;transition:.15s}
+ #drop{border:2px dashed #555;border-radius:8px;padding:18px;text-align:center;
+       cursor:pointer;background:#222;transition:.15s;font-size:13px;color:#aaa}
  #drop.hover{border-color:#7af;background:#2a3040}
  #drop input{display:none}
  .row{display:flex;gap:14px;margin:12px 0;flex-wrap:wrap;align-items:end}
@@ -58,7 +58,17 @@ INDEX_HTML = """<!doctype html>
  button:disabled{background:#3a3a3a;color:#777;cursor:default}
  #pauseBtn:not(:disabled){background:#d4a017;color:#000}
  #stopBtn:not(:disabled){background:#c25a5a;color:#fff}
- button.dl{background:#7af}
+ button.dl{background:#7af;font-size:14px;padding:10px 22px}
+ #dlBar{margin:12px 0;display:none}
+ details.extras{margin:10px 0;background:#1f1f1f;border:1px solid #333;
+                border-radius:6px;padding:6px 10px}
+ details.extras>summary{cursor:pointer;color:#aaa;font-size:12px;list-style:none;
+                        user-select:none}
+ details.extras>summary::-webkit-details-marker{display:none}
+ details.extras>summary::before{content:'\\25B8 ';color:#666}
+ details.extras[open]>summary::before{content:'\\25BE ';color:#888}
+ details.extras .row{margin:8px 0 4px}
+ details.extras .hint{font-size:11px;color:#777;margin:2px 0 6px;line-height:1.4}
  #status{margin:6px 0;font-size:13px;color:#aaa;min-height:1.2em}
  #status.err{color:#f77}
  .vizpane{display:flex;flex-direction:column;gap:10px;margin-top:10px}
@@ -92,7 +102,7 @@ INDEX_HTML = """<!doctype html>
 <body>
 <h1>polytime — rhythm-scaled MIDI echoes</h1>
 <div id="drop">
-  <div>Drop .mid files here (multiple OK), or click to add</div>
+  <div>Drop .mid files or click</div>
   <div id="picked" style="margin-top:6px;color:#7af;font-size:13px"></div>
   <input id="file" type="file" accept=".mid,.midi,audio/midi" multiple style="display:none">
 </div>
@@ -117,20 +127,29 @@ INDEX_HTML = """<!doctype html>
   MIDI keyboard input requires Chrome, Edge, Opera, or Brave (Web MIDI API).
 </div>
 <div class="row">
-  <label>time sig (optional)
-    <input id="tsig" type="text" placeholder="auto — e.g. 5/4">
-  </label>
-  <label>output crop (beats)
-    <input id="outCrop" type="text" placeholder="full · or 0..16">
-  </label>
   <button id="addEcho">+ add polytime</button>
-  <button id="dl" class="dl" style="display:none">Download MIDI</button>
   <button id="quit" style="background:#444;color:#ccc;margin-left:auto"
           title="Stop the server and close polytime">× Quit</button>
 </div>
+<details class="extras">
+  <summary>extra options</summary>
+  <div class="row">
+    <label>time signature
+      <input id="tsig" type="text" placeholder="auto — e.g. 5/4">
+    </label>
+    <label>output crop (beats)
+      <input id="outCrop" type="text" placeholder="full · or 0..16">
+    </label>
+  </div>
+  <div class="hint">
+    <b>time signature</b> overrides what's in the file (only affects how bars/beats line up visually).
+    <b>output crop</b> trims the final MIDI to a beat range — e.g. <code>0..16</code> keeps only the first 16 beats.
+  </div>
+</details>
 <div id="echoes"></div>
 <div class="modeHint" id="modeHint"></div>
 <div id="status"></div>
+<div id="dlBar"><button id="dl" class="dl">⬇ Download MIDI</button></div>
 <div id="playBox" style="margin-top:10px;padding:10px;border:1px solid #333;
      border-radius:6px;background:#1f1f1f;display:none">
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -155,31 +174,28 @@ INDEX_HTML = """<!doctype html>
     </label>
     <span id="playStatus" style="font-size:12px;color:#aaa"></span>
   </div>
-  <div id="playVoices" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;font-size:12px"></div>
+  <div id="playVoices" style="display:none"></div>
 </div>
 <div id="playNotSupported" style="margin-top:6px;font-size:12px;color:#888;display:none">
   Live playback requires Chrome, Edge, Opera, or Brave (Web MIDI API).
 </div>
 <div class="vizpane">
-  <h3>piano roll — one row per input (sources only), one row per polytime, plus combined output</h3>
+  <h3>piano roll</h3>
   <canvas id="pr" class="pr empty"></canvas>
   <div class="prCtrl">
-    <button data-action="zout">−</button>
-    <button data-action="zin">+</button>
-    <button data-action="fit">fit</button>
-    <span style="margin-left:10px;color:#777">row height</span>
-    <button data-action="hout">−</button>
-    <button data-action="hin">+</button>
-    <label style="margin-left:10px;color:#aaa;font-size:12px">
+    <button data-action="zout" title="zoom out">−</button>
+    <button data-action="zin" title="zoom in">+</button>
+    <button data-action="fit" title="fit to data">fit</button>
+    <label style="margin-left:14px;color:#aaa" title="Show one row per polytime, plus the combined overlay. Off shows only the combined result.">
       <input type="checkbox" id="combinedOnly"> combined only
     </label>
-    drag = pan · +/− or buttons = zoom · use pick buttons to select source/start
+    <span style="margin-left:auto;color:#666;font-size:11px">drag to pan · scroll to zoom</span>
   </div>
 </div>
 <script>
 const $=(id)=>document.getElementById(id);
 const drop=$('drop'), file=$('file'), picked=$('picked'),
-      dl=$('dl'), st=$('status'), modeHint=$('modeHint'),
+      dl=$('dl'), dlBar=$('dlBar'), st=$('status'), modeHint=$('modeHint'),
       prEl=$('pr'), echoesEl=$('echoes');
 let dlUrl=null, dlName=null, jobId=0, previewJobId=0;
 const inputs=[];  // [{id, file, name, offset:number, kind:'file'|'rec'}]
@@ -219,7 +235,10 @@ let drag = null;
 // Hoisted: the prCtrl IIFE below reads combinedOnly before rebuildRows is
 // reached. With `let` declared at rebuildRows the IIFE hit the temporal
 // dead zone and crashed init — breaking every event handler after it.
-let combinedOnly = localStorage.getItem('combinedOnly') === '1';
+// Combined-only is the default — most users want the final result, not the
+// internal per-voice rows. Persists via localStorage: '0' explicitly opts
+// out, anything else (including absent) → on.
+let combinedOnly = localStorage.getItem('combinedOnly') !== '0';
 let ROW_MIN_H = (() => {
   const saved = parseInt(localStorage.getItem('rowMinH') || '', 10);
   return (saved >= 40 && saved <= 400) ? saved : 120;
@@ -260,9 +279,34 @@ function rowAtY(y, r) {
   }
   return -1;
 }
+// Per-row [lo, hi] computed from the row's own notes (or echoes' notes for
+// the combined overlay). Transposed/inverted echoes can sit far outside the
+// source range; using global pitchLo/pitchHi caused notes to render outside
+// row bounds and overlap neighbours.
+function rowPitchRange(rowIdx) {
+  const row = rows[rowIdx];
+  if (!row) return [pitchLo, pitchHi];
+  let lo = Infinity, hi = -Infinity;
+  const eat = (ns) => { for (const n of (ns || [])) {
+    if (n.midi < lo) lo = n.midi; if (n.midi > hi) hi = n.midi;
+  }};
+  if (row.overlay) {
+    for (let k = 0; k < echoes.length; k++) {
+      if (echoes[k].include === false) continue;
+      const pv = processedVoices && processedVoices[k+1];
+      if (pv) eat(pv.notes);
+    }
+  } else {
+    eat(row.notes);
+  }
+  if (!isFinite(lo)) { lo = pitchLo; hi = pitchHi; }
+  if (hi - lo < 12) { const mid = (lo + hi) / 2; lo = mid - 6; hi = mid + 6; }
+  return [lo, hi];
+}
 function pitchToY(p, rowIdx, r) {
   const rb = rowBounds(r)[rowIdx];
-  const lo = pitchLo - 1, hi = pitchHi + 1;
+  const [rlo, rhi] = rowPitchRange(rowIdx);
+  const lo = rlo - 1, hi = rhi + 1;
   return rb.y0 + 4 + (hi - p) / (hi - lo) * (rb.y1 - rb.y0 - 8);
 }
 function snapToOriginalNote(beat) {
@@ -359,7 +403,8 @@ function draw() {
     ctx.textBaseline = 'top';
     ctx.fillText(row.label || '', 4, rb[i].y0 + 4);
     const rowH = rb[i].y1 - rb[i].y0 - 8;
-    const noteH = Math.max(2, rowH / (pitchHi - pitchLo + 3));
+    const [rlo, rhi] = rowPitchRange(i);
+    const noteH = Math.max(2, rowH / (rhi - rlo + 3));
     if (row.overlay) {
       // Combined output = every included polytime. Read notes/colors from
       // `echoes` directly so the overlay still renders when per-voice rows
@@ -581,6 +626,7 @@ document.querySelectorAll('.prCtrl button[data-action]').forEach(btn => {
   cb.addEventListener('change', () => {
     combinedOnly = cb.checked;
     localStorage.setItem('combinedOnly', combinedOnly ? '1' : '0');
+    // '1' or '0' both count as explicit opt-in/out for future loads.
     rebuildRows();
     fitCanvas(); draw();
   });
@@ -676,7 +722,6 @@ function pitchBuilderHTML(p) {
       ['none','none'],
       ['transpose','transpose'],
       ['invert','invert (chromatic)'],
-      ['invert_diatonic','invert (diatonic)'],
     ];
     return '<select data-b="kind" style="background:#222;color:#eee;border:1px solid #444;padding:2px 4px;font:inherit">'
       + opts.map(([v,l]) => '<option value="'+v+'"'+(v===cur?' selected':'')+'>'+l+'</option>').join('')
@@ -918,7 +963,7 @@ async function runPreview() {
     }
     rebuildRows();
     dlUrl = j.midi_data_url; dlName = j.midi_filename;
-    dl.style.display = 'inline-block';
+    dlBar.style.display = 'block';
   } catch (e) {
     if (mine === previewJobId) setStatus('preview error: '+e.message, true);
   }
@@ -967,7 +1012,7 @@ function removeInput(id) {
   renderInputs();
   if (inputs.length === 0) {
     originalNotes=[]; processedVoices=null; rebuildRows();
-    prEl.classList.add('empty'); dl.style.display='none';
+    prEl.classList.add('empty'); dlBar.style.display='none';
     setStatus('');
   } else {
     refreshPreview();
@@ -1019,7 +1064,7 @@ async function refreshPreview() {
   const mine = ++jobId;
   originalNotes=[]; processedVoices=null;
   rebuildRows(); prEl.classList.add('empty');
-  dl.style.display='none'; dlUrl=null; dlName=null;
+  dlBar.style.display='none'; dlUrl=null; dlName=null;
   setStatus('loading preview...');
   const fd = new FormData();
   inputs.forEach((inp, i) => fd.append('mid_'+i, inp.file, inp.name));
@@ -1455,15 +1500,18 @@ function internalAllOff() {
 function collectPlayEvents() {
   const evs = [];
   const global = combinedCropRange();
-  // Source rows are never in the output; the player follows the output.
-  // An echo's on/off lives solely on the echo's `include` flag (echo strip).
-  for (const row of rows) {
-    if (row.overlay || row.kind !== 'echo') continue;
-    if (echoes[row.echoIdx]?.include === false) continue;
-    if (!row.notes) continue;
-    const s = voiceSettings.get(row.pid);
+  // Walk echoes/processedVoices directly rather than `rows`, so combined-only
+  // mode (which has no per-echo rows) still produces playback events. Each
+  // echo's per-voice crop lives in voiceSettings under 'echo:'+echo.id —
+  // stable across rebuildRows().
+  for (let k = 0; k < echoes.length; k++) {
+    const ek = echoes[k];
+    if (ek.include === false) continue;
+    const pv = processedVoices && processedVoices[k+1];
+    if (!pv || !pv.notes) continue;
+    const s = voiceSettings.get('echo:' + ek.id);
     const local = s ? parseCrop(s.crop) : null;
-    for (const n of row.notes) {
+    for (const n of pv.notes) {
       let on = n.on, off = n.off;
       for (const r of [local, global]) {
         if (!r) continue;
