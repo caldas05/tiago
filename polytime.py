@@ -38,6 +38,7 @@ from model.voice import Voice
 from model.part import Part
 from model.score import Score
 from transforms.temporal import echo, scale_rhythm, shift_offset
+from transforms.pitch_dsl import parse_op_chain
 
 
 def detect_bpm(path: str | Path) -> float | None:
@@ -196,6 +197,7 @@ def polytime(
     theme_range: tuple[Fraction, Fraction] | None = None,
     theme_ranges: tuple[tuple[Fraction, Fraction] | None, ...] | None = None,
     output_range: tuple[Fraction, Fraction] | None = None,
+    pitch_ops: tuple[str | None, ...] | None = None,
 ) -> Path:
     """Append rhythm-scaled echoes to the first part of `input_path` and
     write a MIDI file. Returns the MIDI path
@@ -223,6 +225,17 @@ def polytime(
             raise ValueError(
                 f"ats length {len(ats_f)} must match scales length {len(scales_f)}"
             )
+    if pitch_ops is None:
+        pitch_fns = tuple((lambda v: v) for _ in scales_f)
+        pitch_labels: tuple[str, ...] = tuple("" for _ in scales_f)
+    else:
+        if len(pitch_ops) != len(scales_f):
+            raise ValueError(
+                f"pitch_ops length {len(pitch_ops)} must match scales length {len(scales_f)}"
+            )
+        # Parse upfront so a typo fails the request before any MIDI work.
+        pitch_fns = tuple(parse_op_chain(p or "") for p in pitch_ops)
+        pitch_labels = tuple((p or "").replace(" ", "") for p in pitch_ops)
 
     # load_mido reads tick-accurate from raw MIDI and gives one Voice per
     # track; the music21 path would drop chords and extra voices. We then
@@ -278,13 +291,20 @@ def polytime(
         return f"{float(x):.4g}"
 
     echo_voices: list[Voice] = []
-    for k, (s, a, src) in enumerate(
-        zip(scales_f, ats_f, per_voice_sources), start=1
+    for k, (s, a, src, pfn, plabel) in enumerate(
+        zip(scales_f, ats_f, per_voice_sources, pitch_fns, pitch_labels),
+        start=1,
     ):
         scaled = scale_rhythm(src, s)
         shifted = shift_offset(scaled, a)
+        try:
+            pitched = pfn(shifted)
+        except ValueError as exc:
+            raise ValueError(f"pitch op failed for echo {k}: {exc}") from None
+        suffix = f"_{plabel}" if plabel else ""
         echo_voices.append(Voice(
-            id=f"echo_{k}_x{_fmt(s)}@{_fmt(a)}", events=shifted.events,
+            id=f"echo_{k}_x{_fmt(s)}@{_fmt(a)}{suffix}",
+            events=pitched.events,
         ))
 
     def _crop(v: Voice) -> Voice:
@@ -342,6 +362,11 @@ def main():
                     help="override the file's time signature (e.g. 3/4); "
                          "default: read from the MIDI file's meta-event, "
                          "fall back to 4/4 if absent")
+    ap.add_argument("--pitch-op", default=None,
+                    help="pitch transform applied to the echo: "
+                         "'_' (identity), 't+7' (transpose), 'i@C4' "
+                         "(chromatic invert), 'id@E4/C-major' (diatonic "
+                         "invert); chain with ';'")
     ap.add_argument("--bpm", type=float, default=120.0,
                     help="tempo, only used to convert seconds in --at (default 120)")
     args = ap.parse_args()
@@ -362,6 +387,7 @@ def main():
         scale=Fraction(args.scale),
         out=args.out,
         time_signature=ts,
+        pitch_ops=(args.pitch_op,) if args.pitch_op else None,
     )
     print(f"Wrote {out}")
     

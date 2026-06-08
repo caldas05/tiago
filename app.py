@@ -67,7 +67,7 @@ INDEX_HTML = """<!doctype html>
  iframe.empty{background:#222;border-style:dashed}
  canvas.pr{width:100%;height:auto;border:1px solid #333;border-radius:4px;
      background:#181818;display:block;cursor:crosshair}
- canvas.pr.empty{border-style:dashed;min-height:200px}
+ canvas.pr.empty{border-style:dashed;min-height:240px}
  .prCtrl{display:flex;gap:6px;align-items:center;font-size:12px;color:#888;margin-top:-4px}
  .prCtrl button{padding:2px 8px;background:#333;color:#ccc;border:1px solid #555;
                 border-radius:3px;cursor:pointer;font:inherit}
@@ -106,6 +106,9 @@ INDEX_HTML = """<!doctype html>
     <button id="recStop" disabled>■ Stop</button>
     <label class="inline">bpm
       <input id="recBpm" type="number" value="120" min="20" max="400" style="width:70px">
+    </label>
+    <label class="inline" title="Hear what you play through the internal synth">
+      <input id="recMonitor" type="checkbox" checked> 🔊 Monitor input
     </label>
     <span id="recStatus" style="font-size:12px;color:#aaa"></span>
   </div>
@@ -160,10 +163,26 @@ INDEX_HTML = """<!doctype html>
 <div class="vizpane">
   <h3>piano roll — one row per input (sources only), one row per polytime, plus combined output</h3>
   <canvas id="pr" class="pr empty"></canvas>
+  <div id="analysisPane" style="margin-top:6px;display:none">
+    <div style="display:flex;align-items:center;gap:10px;font-size:12px;color:#bbb;flex-wrap:wrap">
+      <span>dissonance</span>
+      <label><input type="radio" name="dissMode" value="final" checked> final only</label>
+      <label><input type="radio" name="dissMode" value="external"> external only (between voices)</label>
+      <label><input type="radio" name="dissMode" value="split"> split (each pair + final)</label>
+      <span id="pairStats" style="color:#888"></span>
+    </div>
+    <canvas id="dissStrip" height="28" style="width:100%;display:block;margin-top:2px;background:#111;border:1px solid #333"></canvas>
+  </div>
   <div class="prCtrl">
     <button data-action="zout">−</button>
     <button data-action="zin">+</button>
     <button data-action="fit">fit</button>
+    <span style="margin-left:10px;color:#777">row height</span>
+    <button data-action="hout">−</button>
+    <button data-action="hin">+</button>
+    <label style="margin-left:10px;color:#aaa;font-size:12px">
+      <input type="checkbox" id="combinedOnly"> combined only
+    </label>
     drag = pan · +/− or buttons = zoom · use pick buttons to select source/start
   </div>
 </div>
@@ -207,7 +226,16 @@ let xMin = 0, xMax = 16;
 let mode = null;             // {type:'source'|'start', echoIdx}
 let pendingAnchor = null;    // beat anchor for click+click source range
 let drag = null;
-const ROW_MIN_H = 70;
+let ROW_MIN_H = (() => {
+  const saved = parseInt(localStorage.getItem('rowMinH') || '', 10);
+  return (saved >= 40 && saved <= 400) ? saved : 120;
+})();
+const ROW_H_STEP = 20, ROW_H_MIN = 40, ROW_H_MAX = 400;
+function bumpRowH(delta) {
+  ROW_MIN_H = Math.max(ROW_H_MIN, Math.min(ROW_H_MAX, ROW_MIN_H + delta));
+  localStorage.setItem('rowMinH', String(ROW_MIN_H));
+  fitCanvas(); draw();
+}
 const padL = 70, padR = 12, padT = 8, padB = 22;
 
 function fitCanvas() {
@@ -339,16 +367,23 @@ function draw() {
     const rowH = rb[i].y1 - rb[i].y0 - 8;
     const noteH = Math.max(2, rowH / (pitchHi - pitchLo + 3));
     if (row.overlay) {
-      // Combined output = every included polytime. Inputs are sources only,
-      // never in the final output, so they don't appear here.
-      for (let j = 0; j < rows.length; j++) {
-        const r2 = rows[j];
-        if (j === i || r2.overlay) continue;
-        if (r2.kind !== 'echo') continue;
-        if (echoes[r2.echoIdx]?.include === false) continue;
-        ctx.fillStyle = r2.color || PALETTE[j % PALETTE.length];
+      // Combined output = every included polytime. Read notes/colors from
+      // `echoes` directly so the overlay still renders when per-voice rows
+      // are hidden ("combined only" mode).
+      for (let k = 0; k < echoes.length; k++) {
+        const ek = echoes[k];
+        if (ek.include === false) continue;
+        const pv = processedVoices && processedVoices[k+1];
+        if (!pv || !pv.notes) continue;
+        ctx.fillStyle = ek.color || PALETTE[k % PALETTE.length];
         ctx.globalAlpha = 0.7;
-        drawNotes(r2.notes, i, r, noteH);
+        // Preserve per-echo crops by passing the echo's pid into drawNotes
+        // via a synthetic row entry temporarily — cheapest path that keeps
+        // applyRowCrops working without changing its signature.
+        const saved = rows[i].pid;
+        rows[i].pid = 'echo:'+ek.id;
+        drawNotes(pv.notes, i, r, noteH);
+        rows[i].pid = saved;
       }
       ctx.globalAlpha = 1.0;
     } else {
@@ -368,6 +403,9 @@ function draw() {
   }
   ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
   ctx.strokeRect(padL, padT, plotW(r), plotH(r));
+  // Keep the dissonance strip's heatmap + playhead in lockstep with the
+  // roll's zoom/pan/playback frame. Cheap: ~O(width) per redraw.
+  if (lastAnalysis) drawDissStrip();
 }
 function applyRowCrops(notes, pid) {
   // Honor the per-row crop + the combined "global" crop from the player
@@ -540,9 +578,22 @@ document.querySelectorAll('.prCtrl button[data-action]').forEach(btn => {
       case 'zin':   zoomAt(1.4, (xMin+xMax)/2); break;
       case 'zout':  zoomAt(1/1.4, (xMin+xMax)/2); break;
       case 'fit':   fitView(); break;
+      case 'hin':   bumpRowH(+ROW_H_STEP); break;
+      case 'hout':  bumpRowH(-ROW_H_STEP); break;
     }
   });
 });
+(() => {
+  const cb = $('combinedOnly');
+  if (!cb) return;
+  cb.checked = combinedOnly;
+  cb.addEventListener('change', () => {
+    combinedOnly = cb.checked;
+    localStorage.setItem('combinedOnly', combinedOnly ? '1' : '0');
+    rebuildRows();
+    fitCanvas(); draw();
+  });
+})();
 window.addEventListener('resize', () => { draw(); });
 window.addEventListener('keydown', (e) => {
   const t = e.target;
@@ -562,6 +613,7 @@ function makeEcho(opts) {
     scale: opts.scale || '1',
     source: null,
     start: opts.start || '0',
+    pitch: opts.pitch || '',
     color: PALETTE[i % PALETTE.length],
     include: true,
     source_id: opts.source_id != null ? opts.source_id
@@ -585,6 +637,116 @@ function setMode(m) {
   }
   draw();
 }
+// ── pitch builder (intuitive UI for the pitch DSL) ───────────────────
+// Maps a small set of "kind" + params to the DSL string stored in e.pitch.
+// Single op per echo via the builder — chaining ('t+5;i@C4') stays
+// expressible via the DSL but isn't reachable from the buttons. Add later
+// if anyone asks.
+const PITCH_LETTERS = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const PITCH_SCALES  = ['major','minor','dorian','phrygian','lydian',
+                       'mixolydian','locrian','harmonic_minor',
+                       'melodic_minor','whole_tone','pentatonic_major',
+                       'chromatic'];
+function parsePitchOp(s) {
+  s = (s || '').trim();
+  if (s === '' || s === '_') return { kind: 'none' };
+  let m;
+  if ((m = /^t([+-]?\\d+)$/.exec(s))) {
+    return { kind: 'transpose', semis: parseInt(m[1], 10) };
+  }
+  if ((m = /^i@([A-G][#b]?)(-?\\d+)$/.exec(s))) {
+    return { kind: 'invert', letter: m[1], octave: parseInt(m[2], 10) };
+  }
+  if ((m = /^id@([A-G][#b]?)(-?\\d+)\\/([A-G][#b]?)-([a-z_]+)$/.exec(s))) {
+    return {
+      kind: 'invert_diatonic',
+      letter: m[1], octave: parseInt(m[2], 10),
+      scale_root: m[3], scale_name: m[4],
+    };
+  }
+  // Unrecognised (e.g. chained) — leave it custom and let the user know.
+  return { kind: 'custom', raw: s };
+}
+function synthPitchOp(p) {
+  switch (p.kind) {
+    case 'none':     return '';
+    case 'transpose':
+      return 't' + (p.semis >= 0 ? '+' : '') + p.semis;
+    case 'invert':   return 'i@' + p.letter + p.octave;
+    case 'invert_diatonic':
+      return 'id@' + p.letter + p.octave + '/' + p.scale_root + '-' + p.scale_name;
+    case 'custom':   return p.raw;
+  }
+  return '';
+}
+function pitchBuilderHTML(p) {
+  const kindSel = (cur) => {
+    const opts = [
+      ['none','none'],
+      ['transpose','transpose'],
+      ['invert','invert (chromatic)'],
+      ['invert_diatonic','invert (diatonic)'],
+    ];
+    return '<select data-b="kind" style="background:#222;color:#eee;border:1px solid #444;padding:2px 4px;font:inherit">'
+      + opts.map(([v,l]) => '<option value="'+v+'"'+(v===cur?' selected':'')+'>'+l+'</option>').join('')
+      + '</select>';
+  };
+  const noteSel = (cur, key='letter') => '<select data-b="'+key+'" style="background:#222;color:#eee;border:1px solid #444;padding:2px 4px;font:inherit">'
+      + PITCH_LETTERS.map(l => '<option'+(l===cur?' selected':'')+'>'+l+'</option>').join('')
+      + '</select>';
+  const octSel = (cur, key='octave') => '<select data-b="'+key+'" style="background:#222;color:#eee;border:1px solid #444;padding:2px 4px;font:inherit">'
+      + [0,1,2,3,4,5,6,7,8].map(o => '<option'+(o===cur?' selected':'')+'>'+o+'</option>').join('')
+      + '</select>';
+  const scaleSel = (cur) => '<select data-b="scale_name" style="background:#222;color:#eee;border:1px solid #444;padding:2px 4px;font:inherit">'
+      + PITCH_SCALES.map(n => '<option'+(n===cur?' selected':'')+'>'+n+'</option>').join('')
+      + '</select>';
+  let body = '';
+  if (p.kind === 'transpose') {
+    body = '<input data-b="semis" type="number" value="'+p.semis+'" style="width:54px;background:#222;color:#eee;border:1px solid #444;padding:2px 4px;font:inherit"> semis';
+  } else if (p.kind === 'invert') {
+    body = 'axis ' + noteSel(p.letter) + octSel(p.octave);
+  } else if (p.kind === 'invert_diatonic') {
+    body = 'axis ' + noteSel(p.letter) + octSel(p.octave) + ' in '
+         + noteSel(p.scale_root, 'scale_root') + scaleSel(p.scale_name);
+  } else if (p.kind === 'custom') {
+    body = '<input data-b="raw" type="text" value="'+(p.raw||'').replace(/"/g,'&quot;')+'" style="width:140px;background:#222;color:#eee;border:1px solid #444;padding:2px 4px;font:inherit" title="raw DSL — chains and edge cases">';
+  }
+  return kindSel(p.kind) + ' ' + body;
+}
+function wirePitchBuilder(echo, container) {
+  function render() {
+    const p = parsePitchOp(echo.pitch);
+    container.innerHTML = pitchBuilderHTML(p);
+    container.querySelectorAll('[data-b]').forEach(el => {
+      const evt = (el.tagName === 'SELECT') ? 'change' : 'input';
+      el.addEventListener(evt, () => {
+        const key = el.dataset.b;
+        const cur = parsePitchOp(echo.pitch);
+        if (key === 'kind') {
+          // Re-seed defaults when switching op kind.
+          const k = el.value;
+          let np = { kind: k };
+          if (k === 'transpose')       np.semis = 0;
+          else if (k === 'invert')     { np.letter = 'C'; np.octave = 4; }
+          else if (k === 'invert_diatonic') {
+            np.letter = 'E'; np.octave = 4;
+            np.scale_root = 'C'; np.scale_name = 'major';
+          } else if (k === 'custom')   np.raw = cur.raw || '';
+          echo.pitch = synthPitchOp(np);
+          render();
+        } else {
+          const np = Object.assign({}, cur);
+          if (key === 'semis' || key === 'octave') np[key] = parseInt(el.value, 10) || 0;
+          else np[key] = el.value;
+          echo.pitch = synthPitchOp(np);
+        }
+        schedulePreview();
+      });
+    });
+  }
+  render();
+}
+
 function renderEchoes() {
   echoesEl.innerHTML = '';
   echoes.forEach((e, i) => {
@@ -605,6 +767,9 @@ function renderEchoes() {
         <select data-f="source_id" style="padding:3px 6px;background:#222;color:#eee;border:1px solid #444;border-radius:3px;font:inherit;max-width:140px">${sourceOpts}</select>
       </label>
       <label class="field">scale<input data-f="scale" type="text" value="${e.scale}"></label>
+      <div class="field" data-f="pitchBuilder">pitch
+        <div class="pitchBuilder" style="display:flex;gap:4px;align-items:center"></div>
+      </div>
       <div class="field">range
         <div><input data-f="source" type="text" value="${e.source ? e.source[0].toFixed(2)+'..'+e.source[1].toFixed(2) : ''}" placeholder="all"><button class="mode" data-mode="source">pick</button></div>
       </div>
@@ -613,6 +778,8 @@ function renderEchoes() {
       </div>
       <button class="rm">×</button>`;
     echoesEl.appendChild(div);
+    const pbHost = div.querySelector('[data-f="pitchBuilder"] .pitchBuilder');
+    if (pbHost) wirePitchBuilder(e, pbHost);
     div.querySelectorAll('input[data-f]').forEach(inp => {
       const evt = (inp.type === 'checkbox') ? 'change' : 'input';
       inp.addEventListener(evt, () => {
@@ -679,30 +846,41 @@ $('addEcho').addEventListener('click', () => {
 // so per-voice crop persists across row insertions/removals — keying by array
 // index meant removing an upstream row would shift state onto its neighbour
 // (e.g. a stale crop silently muting an echo).
+let combinedOnly = localStorage.getItem('combinedOnly') === '1';
 function rebuildRows() {
   rows = [];
-  for (const inp of inputNotes) {
-    rows.push({
-      label: (inp.name || ('input '+inp.id)) + ' (source)',
-      notes: inp.notes || [],
-      color: '#9aa',
-      kind: 'input',
-      inputId: inp.id,
-      pid: 'src:'+inp.id,
-    });
+  if (combinedOnly) {
+    // Combined view skips per-voice rows entirely — only the overlay row,
+    // which pulls notes from `echoes`/`processedVoices` directly.
+    const hasEchoes = echoes.some((e, k) =>
+      e.include !== false && processedVoices && processedVoices[k+1]);
+    if (hasEchoes) {
+      rows.push({ label: 'combined', overlay: true, pid: 'combined' });
+    }
+  } else {
+    for (const inp of inputNotes) {
+      rows.push({
+        label: (inp.name || ('input '+inp.id)) + ' (source)',
+        notes: inp.notes || [],
+        color: '#9aa',
+        kind: 'input',
+        inputId: inp.id,
+        pid: 'src:'+inp.id,
+      });
+    }
+    for (let i = 0; i < echoes.length; i++) {
+      const v = processedVoices && processedVoices[i+1];
+      rows.push({
+        label: 'echo '+(i+1) + (echoes[i].include === false ? ' (off)' : ''),
+        notes: v ? v.notes : [],
+        color: echoes[i].include === false ? '#444' : echoes[i].color,
+        kind: 'echo',
+        echoIdx: i,
+        pid: 'echo:'+echoes[i].id,
+      });
+    }
+    if (rows.length) rows.push({ label: 'combined', overlay: true, pid: 'combined' });
   }
-  for (let i = 0; i < echoes.length; i++) {
-    const v = processedVoices && processedVoices[i+1];
-    rows.push({
-      label: 'echo '+(i+1) + (echoes[i].include === false ? ' (off)' : ''),
-      notes: v ? v.notes : [],
-      color: echoes[i].include === false ? '#444' : echoes[i].color,
-      kind: 'echo',
-      echoIdx: i,
-      pid: 'echo:'+echoes[i].id,
-    });
-  }
-  if (rows.length) rows.push({ label: 'combined', overlay: true, pid: 'combined' });
   // Drop voiceSettings whose pid is no longer present so removed rows don't
   // leave behind state that can re-attach to a future row.
   const live = new Set(rows.map(r => r.pid));
@@ -749,12 +927,152 @@ async function runPreview() {
       }
     }
     rebuildRows();
+    renderAnalysis(j.analysis);
     dlUrl = j.midi_data_url; dlName = j.midi_filename;
     dl.style.display = 'inline-block';
   } catch (e) {
     if (mine === previewJobId) setStatus('preview error: '+e.message, true);
   }
 }
+// ── Analysis strip ────────────────────────────────────────────────────
+// Renders the per-pair dissonance curve from the AnalysisReport into a 1-D
+// heat strip aligned to the piano roll's time axis. No new deps; canvas2d
+// only. Pair selector lets the composer flip between voice pairs (echo i
+// vs echo j) and an aggregated mean across all pairs.
+let lastAnalysis = null;
+function renderAnalysis(a) {
+  const pane = $('analysisPane');
+  if (!a || !a.pair_intervals || a.pair_intervals.length === 0) {
+    pane.style.display = 'none';
+    lastAnalysis = null;
+    return;
+  }
+  lastAnalysis = a;
+  pane.style.display = 'block';
+  drawDissStrip();
+}
+// Mean of a list of per-tick curves. Mean (not sum) keeps the heat strip
+// comparable between thin and thick moments — same rationale as the per-
+// tick mean inside _pair_intervals on the Python side.
+function meanDissCurves(pairs) {
+  if (!pairs.length) return null;
+  const n = pairs[0].dissonance_curve.length;
+  const out = new Array(n).fill(0);
+  for (const p of pairs) {
+    for (let t = 0; t < n; t++) out[t] += p.dissonance_curve[t] || 0;
+  }
+  for (let t = 0; t < n; t++) out[t] /= pairs.length;
+  return out;
+}
+// Paint one curve into one strip row inside the shared canvas.
+function paintDissRow(ctx2, curve, tpb, y0, rowH, w) {
+  const n = curve.length;
+  const plotL = padL, plotR = w - padR;
+  for (let x = plotL; x < plotR; x++) {
+    const b0 = xMin + (x - plotL) / (plotR - plotL) * (xMax - xMin);
+    const b1 = xMin + (x + 1 - plotL) / (plotR - plotL) * (xMax - xMin);
+    const t0 = Math.max(0, Math.floor(b0 * tpb));
+    const t1 = Math.min(n, Math.max(t0 + 1, Math.ceil(b1 * tpb)));
+    let s = 0, cc = 0;
+    for (let t = t0; t < t1; t++) { s += curve[t]; cc++; }
+    if (!cc) continue;
+    const v = Math.max(0, Math.min(1, s / cc));
+    const r = Math.round(255 * v);
+    const g = Math.round(120 * v * (1 - v) * 2);
+    ctx2.fillStyle = 'rgb(' + r + ',' + g + ',0)';
+    ctx2.fillRect(x, y0, 1, rowH);
+  }
+  ctx2.strokeStyle = '#333';
+  ctx2.strokeRect(plotL + 0.5, y0 + 0.5, (plotR - plotL) - 1, rowH - 1);
+}
+function dissModeValue() {
+  const r = document.querySelector('input[name="dissMode"]:checked');
+  return r ? r.value : 'final';
+}
+// Truncate a label to fit in `maxPx` using ellipsis. Cheap: linear shrink.
+function fitLabel(ctx2, text, maxPx) {
+  if (ctx2.measureText(text).width <= maxPx) return text;
+  let s = text;
+  while (s.length > 1 && ctx2.measureText(s + '…').width > maxPx) {
+    s = s.slice(0, -1);
+  }
+  return s + '…';
+}
+function drawDissStrip() {
+  const a = lastAnalysis; if (!a) return;
+  const strip = $('dissStrip');
+  const mode = dissModeValue();
+  const w = prEl.clientWidth || 800;
+  const dpr = window.devicePixelRatio || 1;
+  // Always compute the 'final' curve — it's either the only row (final
+  // mode) or the bottom row (split mode).
+  const finalCurve = meanDissCurves(a.pair_intervals);
+  const externalPairs = a.pair_intervals.filter(p => p.voice_i !== p.voice_j);
+  const rows = [];
+  if (mode === 'split') {
+    a.pair_intervals.forEach(p => {
+      const lab = (p.voice_i === p.voice_j)
+        ? p.voice_i + ' (chords)'
+        : p.voice_i + ' ↔ ' + p.voice_j;
+      rows.push({ label: lab, curve: p.dissonance_curve });
+    });
+    if (a.pair_intervals.length > 1) {
+      rows.push({ label: 'final', curve: finalCurve });
+    }
+  } else if (mode === 'external') {
+    const c = meanDissCurves(externalPairs);
+    if (c) rows.push({ label: 'external (' + externalPairs.length + ')', curve: c });
+  } else {
+    rows.push({ label: 'final', curve: finalCurve });
+  }
+  if (!rows.length || !rows[0].curve) {
+    $('pairStats').textContent = '(no data)';
+    return;
+  }
+  $('pairStats').textContent = 'ticks/beat=' + a.ticks_per_beat;
+  // Row height: 28 for the single-row 'final' mode (legible), 22 per row
+  // when splitting so the stack stays compact.
+  const rowH = (mode === 'split') ? 22 : 28;
+  const gap = 1;
+  const totalH = rows.length * rowH + (rows.length - 1) * gap;
+  strip.style.width = w + 'px';
+  strip.style.height = totalH + 'px';
+  strip.width = Math.round(w * dpr);
+  strip.height = Math.round(totalH * dpr);
+  const ctx2 = strip.getContext('2d');
+  ctx2.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx2.fillStyle = '#111'; ctx2.fillRect(0, 0, w, totalH);
+  const tpb = a.ticks_per_beat;
+  const plotL = padL, plotR = w - padR;
+  rows.forEach((row, i) => {
+    const y0 = i * (rowH + gap);
+    paintDissRow(ctx2, row.curve, tpb, y0, rowH, w);
+    // Label lives inside the left gutter [0, padL). Right-aligned at
+    // padL-6 so it never crosses into the heatmap; ellipsis-truncated
+    // when needed so wide voice ids don't push past padL.
+    ctx2.fillStyle = '#bbb';
+    ctx2.font = '11px system-ui,sans-serif';
+    ctx2.textBaseline = 'middle';
+    ctx2.textAlign = 'right';
+    const maxW = plotL - 8;
+    ctx2.fillText(fitLabel(ctx2, row.label, maxW), plotL - 6, y0 + rowH / 2);
+    ctx2.textAlign = 'left';
+  });
+  // Playhead — single vertical line spanning every row.
+  if (typeof playheadBeat === 'number' && playheadBeat != null) {
+    const px = plotL + (playheadBeat - xMin) / (xMax - xMin) * (plotR - plotL);
+    if (px >= plotL - 1 && px <= plotR + 1) {
+      ctx2.strokeStyle = '#ffec5c'; ctx2.lineWidth = 2;
+      ctx2.beginPath(); ctx2.moveTo(px, 0); ctx2.lineTo(px, totalH); ctx2.stroke();
+    }
+  }
+}
+// Wire the layout toggle so flipping single/stacked redraws immediately.
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.name === 'dissMode' && lastAnalysis) drawDissStrip();
+});
+window.addEventListener('resize', () => { if (lastAnalysis) drawDissStrip(); });
+
 function buildFormData() {
   const fd = new FormData();
   inputs.forEach((inp, i) => fd.append('mid_'+i, inp.file, inp.name));
@@ -770,6 +1088,7 @@ function buildFormData() {
     start: e.start || '0',
     source_id: e.source_id == null ? null : Number(e.source_id),
     include: e.include !== false,
+    pitch: e.pitch || '',
   }))));
   return fd;
 }
@@ -797,7 +1116,7 @@ function removeInput(id) {
   inputs.splice(i, 1);
   renderInputs();
   if (inputs.length === 0) {
-    originalNotes=[]; processedVoices=null; rebuildRows();
+    originalNotes=[]; processedVoices=null; rebuildRows(); renderAnalysis(null);
     prEl.classList.add('empty'); dl.style.display='none';
     setStatus('');
   } else {
@@ -941,7 +1260,8 @@ $('quit').addEventListener('click', () => {
 
 // ── MIDI keyboard input (Web MIDI API) ──────────────────────────────────
 const recBox=$('recBox'), recDevice=$('recDevice'), recBtn=$('recBtn'),
-      recStop=$('recStop'), recStatus=$('recStatus'), recBpm=$('recBpm');
+      recStop=$('recStop'), recStatus=$('recStatus'), recBpm=$('recBpm'),
+      recMonitor=$('recMonitor');
 let midiAccess=null, recording=false, recStart=0, recEvents=[], openNotes={},
     recTimer=null, activeInputs=[];
 
@@ -992,19 +1312,49 @@ function refreshInputs() {
   }
 }
 function onMidi(e) {
-  if (!recording) return;
   const [status, data1, data2] = e.data;
   const cmd = status & 0xf0;
+  const isOn = cmd === 0x90 && data2 > 0;
+  const isOff = cmd === 0x80 || (cmd === 0x90 && data2 === 0);
+  // Monitor: echo every key to the currently selected playback output so you
+  // hear yourself, whether or not a recording is in progress. Routing follows
+  // the Play panel's output picker — internal synth, or any external MIDI
+  // device (a GM synth on Windows, an IAC-bus soundfont app on macOS, etc.).
+  if (recMonitor.checked) {
+    if (isOn) monitorNoteOn(data1, data2);
+    else if (isOff) monitorNoteOff(data1);
+  }
+  if (!recording) return;
   const t = performance.now() - recStart;
-  if (cmd === 0x90 && data2 > 0) {
+  if (isOn) {
     openNotes[data1] = t;
-  } else if (cmd === 0x80 || (cmd === 0x90 && data2 === 0)) {
+  } else if (isOff) {
     const onT = openNotes[data1];
     if (onT === undefined) return;
     delete openNotes[data1];
     recEvents.push({midi: data1, onMs: onT, offMs: t});
   }
 }
+// Monitoring routes through the Play panel's output picker, so it works the
+// same on any OS — internal synth, or whatever external MIDI device is chosen.
+const monitorHeld=new Set();
+function monitorNoteOn(midi, vel) {
+  if (usingInternal()) { internalNoteOn(midi, vel); }
+  else { const out=selectedOutput(); if (!out) return; out.send([0x90, midi, vel]); }
+  monitorHeld.add(midi);
+}
+function monitorNoteOff(midi) {
+  if (usingInternal()) { internalNoteOff(midi); }
+  else { const out=selectedOutput(); if (out) out.send([0x80, midi, 0]); }
+  monitorHeld.delete(midi);
+}
+function monitorAllOff() {
+  for (const m of [...monitorHeld]) monitorNoteOff(m);
+}
+// Unchecking mid-note (or switching output) would strand held voices.
+recMonitor.addEventListener('change', () => {
+  if (!recMonitor.checked) monitorAllOff();
+});
 recBtn.addEventListener('click', async () => {
   if (!midiAccess) {
     recStatus.textContent='requesting MIDI permission…';
@@ -1181,6 +1531,9 @@ playSpeedEl.addEventListener('input', () => {
 playVolEl.addEventListener('input', () => {
   playVolVal.textContent = playVolEl.value;
 });
+// Switching the output while monitoring would strand held voices on the old
+// device — flush them. (monitorAllOff is defined earlier; playOut now exists.)
+playOut.addEventListener('change', monitorAllOff);
 
 function buildOutputList() {
   const prev = playOut.value;
@@ -1744,6 +2097,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_preview()
             elif self.path == "/process":
                 self._handle_process()
+            elif self.path == "/analyze":
+                self._handle_analyze()
             elif self.path == "/shutdown":
                 self._send(200, b"bye", "text/plain")
                 threading.Thread(
@@ -1925,14 +2280,18 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             g_ranges.append((max(Fraction(0), lo), hi))
 
+                g_pitches = tuple(
+                    str(e.get("pitch", "") or "").strip() for _, e in group
+                )
+
                 # Skip per-polytime ranges that landed on nothing — let the rest
                 # still render rather than failing the whole request.
-                runnable: list[tuple[int, Fraction, Fraction, tuple[Fraction, Fraction] | None]] = []
-                for (idx, _), s, a, rng in zip(group, g_scales, g_ats, g_ranges):
+                runnable: list[tuple[int, Fraction, Fraction, tuple[Fraction, Fraction] | None, str]] = []
+                for (idx, _), s, a, rng, pop in zip(group, g_scales, g_ats, g_ranges, g_pitches):
                     if rng is not None and rng[1] <= rng[0]:
                         echo_notes_by_idx[idx] = []
                         continue
-                    runnable.append((idx, s, a, rng))
+                    runnable.append((idx, s, a, rng, pop))
                 if not runnable:
                     continue
 
@@ -1946,15 +2305,18 @@ class Handler(BaseHTTPRequestHandler):
                         out=tmp_out, time_signature=ts,
                         combine=False,
                         theme_ranges=tuple(r[3] for r in runnable),
+                        pitch_ops=tuple(r[4] for r in runnable),
                     )
                 except ValueError as exc:
-                    # e.g. "theme range … contains no notes" — record empties.
-                    for idx, _, _, _ in runnable:
+                    # e.g. "theme range … contains no notes" or a bad pitch
+                    # op — surface the message via status, record empties for
+                    # affected echoes so the rest still render.
+                    for idx, *_ in runnable:
                         echo_notes_by_idx[idx] = []
                     continue
                 voices, _, _, _ = _voices_from_midi(tmp_out)
-                for (idx, _, _, _), v in zip(runnable, voices):
-                    echo_notes_by_idx[idx] = v["notes"]
+                for r, v in zip(runnable, voices):
+                    echo_notes_by_idx[r[0]] = v["notes"]
 
             # Build the final MIDI from scratch — one track per polytime, in the
             # client-side order. No theme track (sources are not in output).
@@ -2013,6 +2375,15 @@ class Handler(BaseHTTPRequestHandler):
             voices_payload, total_beats, pitch_lo, pitch_hi = _voices_from_midi(
                 mid_path
             )
+            # Analyse while we still have the file on disk. Failures here
+            # should never block the actual render — degrade to no-analysis
+            # rather than 500 the whole request.
+            try:
+                from analysis.report import analyze_midi_file, _asdict_safe
+                analysis_payload = _asdict_safe(analyze_midi_file(str(mid_path)))
+            except Exception:
+                traceback.print_exc()
+                analysis_payload = None
         finally:
             for it in items:
                 try: it["path"].unlink()
@@ -2031,8 +2402,28 @@ class Handler(BaseHTTPRequestHandler):
                              base64.b64encode(mid_data).decode("ascii"),
             "midi_filename": f"{stem}_polytime.mid",
             "detected_ts": ts_label,
+            "analysis": analysis_payload,
         }
         self._send(200, json.dumps(payload).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+    def _handle_analyze(self):
+        """Run analysis on a MIDI file uploaded as multipart 'mid'. Returns
+        the JSON AnalysisReport. Separate from /process so a client can re-
+        score arbitrary MIDI without going through the full echo pipeline."""
+        fields = self._read_fields()
+        mid_bytes = fields.get("mid")
+        if not mid_bytes:
+            raise ValueError("missing 'mid' field")
+        tmp = Path(tempfile.mkstemp(suffix=".mid")[1])
+        try:
+            tmp.write_bytes(mid_bytes)
+            from analysis.report import analyze_midi_file, _asdict_safe
+            report = _asdict_safe(analyze_midi_file(str(tmp)))
+        finally:
+            try: tmp.unlink()
+            except OSError: pass
+        self._send(200, json.dumps(report).encode("utf-8"),
                    "application/json; charset=utf-8")
 
 
