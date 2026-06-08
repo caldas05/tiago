@@ -8,15 +8,25 @@ import base64
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 import webbrowser
 from fractions import Fraction
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+# CI rewrites this string at build time from the pushed git tag (see the
+# "Stamp version" step in .github/workflows/release.yml). Source runs and
+# local builds stay as "dev" — the update banner is suppressed in that case
+# so devs don't get pestered about their own work being out of date.
+VERSION = "dev"
+GITHUB_REPO = "caldas05/polytime"
 
 if hasattr(sys, "_MEIPASS"):
     sys.path.insert(0, sys._MEIPASS)
@@ -98,8 +108,31 @@ INDEX_HTML = """<!doctype html>
           font:inherit;cursor:pointer}
  #addEcho:hover{background:#3b5}
  .modeHint{font-size:12px;color:#7af;min-height:1.2em;margin:4px 2px}
+ #updateBanner{display:none;margin:0 0 12px;padding:10px 14px;background:#2a3140;
+               border:1px solid #466;border-radius:6px;font-size:13px;
+               display:none;align-items:center;gap:12px;flex-wrap:wrap}
+ #updateBanner.show{display:flex}
+ #updateBanner .ub-msg{flex:1;min-width:220px;color:#ddd}
+ #updateBanner .ub-msg b{color:#fff}
+ #updateBanner .ub-hint{display:block;font-size:11px;color:#9ab;margin-top:2px}
+ #updateBanner button{padding:6px 12px;font-size:12px;font-weight:600}
+ #updateBanner .ub-dl{background:#7af}
+ #updateBanner .ub-skip{background:#333;color:#aaa}
+ #updateBanner .ub-close{background:transparent;color:#789;font-size:18px;
+                         padding:0 4px;border:0;font-weight:400}
+ #updateBanner .ub-status{font-size:12px;color:#9ab;width:100%;margin-top:4px}
 </style></head>
 <body>
+<div id="updateBanner">
+  <div class="ub-msg">
+    🆕 polytime <b id="ubVersion">v?</b> is available.
+    <span class="ub-hint" id="ubHint"></span>
+  </div>
+  <button class="ub-dl" id="ubDl">Download</button>
+  <button class="ub-skip" id="ubSkip" title="Don't remind me about this version again">Skip this version</button>
+  <button class="ub-close" id="ubClose" title="Hide until next launch">×</button>
+  <div class="ub-status" id="ubStatus"></div>
+</div>
 <h1>polytime — rhythm-scaled MIDI echoes</h1>
 <div id="drop">
   <div>Drop .mid files or click</div>
@@ -1126,6 +1159,60 @@ dl.addEventListener('click',()=>{
   const a=document.createElement('a');a.href=dlUrl;a.download=dlName;a.click();
 });
 
+// ── Update check ────────────────────────────────────────────────────────
+// Polls /version once on load; if the server says a newer GitHub release
+// exists, shows a dismissible banner. Three dismissal levels:
+//   · × (close)        — hidden until next launch
+//   · Skip this version — stored in localStorage; never shown for this tag
+//   · Download         — auto-download via the server, reveals in Finder
+function cmpVer(a, b) {
+  const pa = (a||'').replace(/^v/, '').split('.').map(n => parseInt(n,10)||0);
+  const pb = (b||'').replace(/^v/, '').split('.').map(n => parseInt(n,10)||0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i]||0) - (pb[i]||0);
+    if (d) return d;
+  }
+  return 0;
+}
+async function checkForUpdate() {
+  let info;
+  try { const r = await fetch('/version'); info = await r.json(); }
+  catch { return; }
+  if (info.current === 'dev') return;  // running from source — never nag
+  if (!info.latest || !info.latest.tag) return;
+  if (cmpVer(info.latest.tag, info.current) <= 0) return;
+  if (localStorage.getItem('skipVersion') === info.latest.tag) return;
+  const banner = $('updateBanner');
+  $('ubVersion').textContent = info.latest.tag;
+  const hint = info.platform === 'macos'
+    ? 'When dragging to Applications, click <b>Replace</b> to update in place.'
+    : info.platform === 'windows'
+    ? 'Quit the current polytime first, then run the new .exe.'
+    : '';
+  $('ubHint').innerHTML = hint;
+  banner.classList.add('show');
+  $('ubDl').onclick = async () => {
+    $('ubDl').disabled = true;
+    $('ubStatus').textContent = 'downloading…';
+    try {
+      const r = await fetch('/download_update', { method:'POST' });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'download failed');
+      $('ubStatus').innerHTML = '✅ saved to Downloads — installer opened in Finder';
+    } catch (e) {
+      $('ubStatus').innerHTML = '❌ download failed (' + e.message + '). ' +
+        '<a href="' + (info.latest.html_url||'#') + '" target="_blank" style="color:#7af">open release page</a>';
+      $('ubDl').disabled = false;
+    }
+  };
+  $('ubSkip').onclick = () => {
+    localStorage.setItem('skipVersion', info.latest.tag);
+    banner.classList.remove('show');
+  };
+  $('ubClose').onclick = () => banner.classList.remove('show');
+}
+checkForUpdate();
+
 // Keep-alive: ping every 5s so the server knows we're still here. If the
 // user closes the tab, the pings stop, and the server self-terminates after
 // ~20s. Also send an explicit shutdown beacon on unload as a fast path.
@@ -1985,6 +2072,9 @@ class Handler(BaseHTTPRequestHandler):
             LAST_HEARTBEAT = time.monotonic()
             self._send(200, b"ok", "text/plain")
             return
+        if self.path == "/version":
+            self._handle_version()
+            return
         self._send(404, b"not found", "text/plain")
 
     def do_POST(self):
@@ -1993,6 +2083,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_preview()
             elif self.path == "/process":
                 self._handle_process()
+            elif self.path == "/download_update":
+                self._handle_download_update()
             elif self.path == "/shutdown":
                 self._send(200, b"bye", "text/plain")
                 threading.Thread(
@@ -2290,6 +2382,112 @@ class Handler(BaseHTTPRequestHandler):
         }
         self._send(200, json.dumps(payload).encode("utf-8"),
                    "application/json; charset=utf-8")
+
+    # ── Update check + auto-download ────────────────────────────────────
+    # We poll GitHub from the server (not the browser) so the page works
+    # offline / inside corporate networks that block api.github.com — the
+    # update banner just doesn't appear in that case. Failures are silent
+    # and cached so a flaky network can't slow the UI down on every load.
+    def _handle_version(self):
+        latest = _fetch_latest_release()  # cached, returns None on failure
+        payload = {
+            "current": VERSION,
+            "latest": latest,  # {tag, name, html_url, asset_url, asset_name} or None
+            "platform": _platform_asset_pattern()[0],  # "macos" | "windows" | "linux"
+        }
+        self._send(200, json.dumps(payload).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+    def _handle_download_update(self):
+        """Download the right release asset for this OS into ~/Downloads,
+        then open Finder/Explorer with the file selected. Manual install
+        still required (drag-to-Applications etc.) — this just removes the
+        browser detour."""
+        latest = _fetch_latest_release()
+        if not latest or not latest.get("asset_url"):
+            raise ValueError("no downloadable update found")
+        url = latest["asset_url"]
+        name = latest["asset_name"]
+        dest_dir = Path.home() / "Downloads"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / name
+        # Streamed write so big dmg/zips don't blow memory.
+        with urllib.request.urlopen(url, timeout=60) as resp, open(dest, "wb") as out:
+            while chunk := resp.read(1 << 16):
+                out.write(chunk)
+        _reveal_in_file_manager(dest)
+        self._send(200, json.dumps({"path": str(dest)}).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+
+# Cache the GitHub response for an hour so opening many tabs / reloading
+# doesn't burn the unauthenticated rate limit (60 req/hr per IP).
+_RELEASE_CACHE: dict[str, object] = {"at": 0.0, "data": None}
+_RELEASE_TTL_S = 3600.0
+
+
+def _platform_asset_pattern() -> tuple[str, str]:
+    """Returns (platform_tag, filename_substring) for the current OS.
+    The substring is matched against assets in the latest release so the
+    naming in release.yml is the source of truth."""
+    if sys.platform == "darwin":
+        return ("macos", "polytime-macos")
+    if sys.platform.startswith("win"):
+        return ("windows", "polytime-windows")
+    return ("linux", "polytime-linux")
+
+
+def _fetch_latest_release() -> dict | None:
+    now = time.monotonic()
+    if _RELEASE_CACHE["data"] is not None and now - _RELEASE_CACHE["at"] < _RELEASE_TTL_S:
+        return _RELEASE_CACHE["data"]  # type: ignore[return-value]
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    try:
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"polytime/{VERSION}",
+        })
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        # Cache the failure for a shorter window so we don't hammer GitHub
+        # when offline but also recover quickly when the network comes back.
+        _RELEASE_CACHE["at"] = now - (_RELEASE_TTL_S - 60)
+        _RELEASE_CACHE["data"] = None
+        return None
+    tag = data.get("tag_name", "")
+    _, asset_sub = _platform_asset_pattern()
+    asset_url = None
+    asset_name = None
+    for a in data.get("assets", []) or []:
+        if asset_sub in (a.get("name") or ""):
+            asset_url = a.get("browser_download_url")
+            asset_name = a.get("name")
+            break
+    result = {
+        "tag": tag,
+        "name": data.get("name") or tag,
+        "html_url": data.get("html_url"),
+        "asset_url": asset_url,
+        "asset_name": asset_name,
+    }
+    _RELEASE_CACHE["at"] = now
+    _RELEASE_CACHE["data"] = result
+    return result
+
+
+def _reveal_in_file_manager(path: Path) -> None:
+    """Open the OS file manager with `path` selected. Best-effort — failure
+    is non-fatal because the file is already on disk in Downloads."""
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", "-R", str(path)], check=False)
+        elif sys.platform.startswith("win"):
+            subprocess.run(["explorer", "/select,", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path.parent)], check=False)
+    except OSError:
+        pass
 
 
 def free_port() -> int:

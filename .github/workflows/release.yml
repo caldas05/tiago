@@ -45,6 +45,28 @@ jobs:
       - name: Install deps
         run: pip install -r requirements-dev.txt
 
+      - name: Stamp version from tag
+        shell: bash
+        run: |
+          # Tag drives VERSION. Replaces the `VERSION = "dev"` line in app.py
+          # with the tag (sans "v"). Non-tag runs (manual workflow_dispatch on
+          # a branch) leave it as "dev" so the in-app update banner stays
+          # suppressed for those test builds.
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF#refs/tags/v}"
+            python -c "
+          import pathlib, re
+          p = pathlib.Path('app.py')
+          s = p.read_text(encoding='utf-8')
+          s2 = re.sub(r'VERSION\s*=\s*\"[^\"]*\"', f'VERSION = \"${VER}\"', s, count=1)
+          assert s != s2, 'VERSION line not found in app.py'
+          p.write_text(s2, encoding='utf-8')
+          print('Stamped VERSION =', '${VER}')
+          "
+          else
+            echo "Not a tagged build; leaving VERSION = dev"
+          fi
+
       - name: Run tests
         run: pytest tests/ -q
 
