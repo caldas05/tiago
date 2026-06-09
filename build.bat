@@ -9,6 +9,8 @@ if not exist %PY% set PY=python
   --add-data "model;model" ^
   --add-data "transforms;transforms" ^
   --add-data "score_io;score_io" ^
+  --additional-hooks-dir hooks ^
+  --hidden-import music21 ^
   app.py
 echo.
 echo Done. See dist\polytime.exe

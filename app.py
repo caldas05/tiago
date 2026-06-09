@@ -135,9 +135,9 @@ INDEX_HTML = """<!doctype html>
 </div>
 <h1>polytime — rhythm-scaled MIDI echoes</h1>
 <div id="drop">
-  <div>Drop .mid files or click</div>
+  <div>Drop .mid or score (.musicxml / .xml / .mxl) files, or click</div>
   <div id="picked" style="margin-top:6px;color:#7af;font-size:13px"></div>
-  <input id="file" type="file" accept=".mid,.midi,audio/midi" multiple style="display:none">
+  <input id="file" type="file" accept=".mid,.midi,audio/midi,.musicxml,.xml,.mxl" multiple style="display:none">
 </div>
 <div id="inputList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px"></div>
 <div id="recBox" style="margin-top:10px;padding:10px;border:1px solid #333;
@@ -1061,7 +1061,8 @@ function renderInputs() {
     const div = document.createElement('div');
     div.className = 'echo';
     div.innerHTML =
-      '<span class="name" style="min-width:0">'+(inp.kind==='rec'?'🎹 ':'📄 ')+
+      '<span class="name" style="min-width:0">'+
+        (inp.kind==='rec'?'🎹 ':inp.kind==='score'?'🎼 ':'📄 ')+
         inp.name.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))+'</span>'+
       '<label class="field">offset (beats)<div><input data-off="'+inp.id+
         '" type="number" step="0.5" value="'+inp.offset+
@@ -1141,7 +1142,7 @@ async function refreshPreview() {
   window.addEventListener(ev, e=>e.preventDefault()));
 drop.addEventListener('click',()=>file.click());
 file.addEventListener('change',e=>{
-  addInputs(e.target.files);
+  ingestFiles(e.target.files);
   file.value = '';
 });
 drop.addEventListener('dragenter',e=>{e.preventDefault();drop.classList.add('hover');});
@@ -1151,8 +1152,42 @@ drop.addEventListener('drop',e=>{
   e.preventDefault();
   drop.classList.remove('hover');
   const fs = e.dataTransfer && e.dataTransfer.files;
-  if (fs && fs.length) addInputs(fs);
+  if (fs && fs.length) ingestFiles(fs);
 });
+
+// Route incoming files: scores go to the server to be split into one MIDI per
+// voice; plain MIDI is added directly. Each split voice becomes its own source
+// row, so you can echo some voices and not others.
+function isScoreFile(f){ const n=(f.name||'').toLowerCase();
+  return n.endsWith('.musicxml')||n.endsWith('.xml')||n.endsWith('.mxl'); }
+function ingestFiles(fs){
+  const arr = [...fs];
+  const midis  = arr.filter(f => !isScoreFile(f));
+  const scores = arr.filter(isScoreFile);
+  if (midis.length) addInputs(midis);
+  scores.forEach(splitScoreFile);
+}
+async function splitScoreFile(file){
+  setStatus('reading score '+file.name+'…');
+  const fd = new FormData();
+  fd.append('score', file, file.name);
+  let j;
+  try {
+    const r = await fetch('/split_score', { method:'POST', body:fd });
+    j = await r.json();
+    if (!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+  } catch(e){ setStatus('score import failed: '+e.message, true); return; }
+  const voices = j.voices || [];
+  if (!voices.length){ setStatus('no notes found in '+file.name, true); return; }
+  voices.forEach(v => {
+    const bytes = Uint8Array.from(atob(v.midi_b64), c => c.charCodeAt(0));
+    const blob = new File([bytes], v.name, { type:'audio/midi' });
+    addInput(blob, { name:v.name, kind:'score' });
+  });
+  renderInputs();
+  refreshPreview();
+  setStatus(voices.length+' voice'+(voices.length>1?'s':'')+' from '+file.name);
+}
 
 dl.addEventListener('click',()=>{
   if(!dlUrl)return;
@@ -2081,6 +2116,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/preview":
                 self._handle_preview()
+            elif self.path == "/split_score":
+                self._handle_split_score()
             elif self.path == "/process":
                 self._handle_process()
             elif self.path == "/download_update":
@@ -2097,6 +2134,46 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._send(400, json.dumps({"error": str(e)}).encode("utf-8"),
                        "application/json; charset=utf-8")
+
+    def _handle_split_score(self):
+        """Explode a dropped score (MusicXML/.mxl/MEI/…) into one MIDI per voice.
+
+        Returns {title, voices:[{name, midi_b64}]}. The client turns each blob
+        into its own source row, so voices that are already separate in the
+        score stay separate here — echo some, leave others alone.
+        """
+        import base64
+        fields = self._read_fields()
+        f = fields.get("score")
+        if not isinstance(f, tuple):
+            raise ValueError("missing score file")
+        filename, content = f
+        suffix = Path(filename or "score.musicxml").suffix or ".musicxml"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        try:
+            from score_io.parsers.musicxml import parse as parse_score, ParseError
+            from score_io.split import split_voices
+            try:
+                score = parse_score(tmp_path)
+            except ParseError as e:
+                raise ValueError(str(e))
+            voices = split_voices(score)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        payload = {
+            "title": score.title,
+            "voices": [
+                {"name": name, "midi_b64": base64.b64encode(data).decode("ascii")}
+                for name, data in voices
+            ],
+        }
+        self._send(200, json.dumps(payload).encode("utf-8"),
+                   "application/json; charset=utf-8")
 
     def _handle_preview(self):
         fields = self._read_fields()

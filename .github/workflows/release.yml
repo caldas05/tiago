@@ -81,12 +81,16 @@ jobs:
               --add-data "model:model" \
               --add-data "transforms:transforms" \
               --add-data "score_io:score_io" \
+              --additional-hooks-dir hooks \
+              --hidden-import music21 \
               app.py
           else
             python -m PyInstaller --onefile --noconsole --name polytime \
               --add-data "model${{ matrix.sep }}model" \
               --add-data "transforms${{ matrix.sep }}transforms" \
               --add-data "score_io${{ matrix.sep }}score_io" \
+              --additional-hooks-dir hooks \
+              --hidden-import music21 \
               app.py
           fi
 

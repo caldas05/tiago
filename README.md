@@ -23,6 +23,8 @@ python app.py
 
 A browser tab opens at `http://127.0.0.1:<port>`. polytime tries to open Chrome / Edge / Brave / Chromium first (for MIDI keyboard support), falling back to your system default.
 
+Drop a `.mid` file, a score (`.musicxml` / `.xml` / `.mxl`), or use the MIDI-keyboard recorder. A dropped score is split into **one source per voice** — every part, staff, and inner voice becomes its own input row, so you can echo some lines and leave others alone (e.g. canon the soprano against an untouched bass).
+
 ### As a standalone binary (no Python needed)
 
 Grab the right asset from the [Releases](../../releases) page:
@@ -57,7 +59,7 @@ The page is intentionally minimal. Top to bottom:
 
 ### Inputs
 
-- **Drop zone** — drop one or more `.mid` files, or click to choose. Multiple files are merged as parallel input voices (each gets its own row in the piano roll).
+- **Drop zone** — drop one or more `.mid` files or scores (`.musicxml` / `.xml` / `.mxl`), or click to choose. Multiple files are merged as parallel input voices (each gets its own row in the piano roll); a score is exploded into one input voice per part/staff/voice.
 - **MIDI keyboard panel** (Chromium browsers only) — appears automatically when Web MIDI is supported. Plug a keyboard in, click **● Record**, play, click **■ Stop**. The recording is added as a new input.
   - **bpm** controls how millisecond timing maps to musical beats in the saved MIDI. *It does not change how your recording sounds* — the wall-clock rhythm is preserved exactly. It only affects where bar lines appear, what `at 2b` means in seconds, and how a DAW labels note durations. If you don't know your tempo, leave it at 120 and use `at 2s` (seconds) for echo entries.
   - **🔊 Monitor input** echoes your keystrokes to the playback output as you play, so you hear yourself.
