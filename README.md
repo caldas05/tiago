@@ -103,6 +103,13 @@ One canvas, one row per echo plus a **combined overlay** row at the bottom. Defa
 
 After processing, **⬇ Download MIDI** appears above the piano roll. The export contains one MIDI track per input + one per echo, each named (`theme`, `echo_1_x3/2@8_t+7`, …) so a DAW shows them as separable, soloable clips.
 
+**⬇ Download score** exports **MusicXML** — opens in MuseScore, Sibelius, Finale, Dorico, and most notation software. It opens a small panel where you tick which output voices to include. Two ways out:
+
+- **Download each separately** (a `.zip` of one `.musicxml` per voice) — each voice is notated at its **original rhythm** with a **tempo mark** carrying its speed (a `3/2` echo becomes the theme at ♩=80; a `60bpm` echo at ♩=60). Nothing is stretched, so the note values stay clean — even irrational ratios like `sqrt(2)` engrave perfectly, with the ratio living in the tempo (♩≈84.85) rather than in unnotatable rhythm.
+- **Merge** the ticked voices into one multi-staff score, aligned in real time on a shared pulse — best when the voices share a compatible meter. Here the rhythms *are* stretched onto one grid (and quantized to 16ths/triplets), so it reads well only for compatible ratios.
+
+Each separate file is named after its **source instrument** (`Violin.musicxml`, `Piano.musicxml`, …), numbered only when one source feeds several voices (`Violin_2.musicxml`).
+
 ## Examples
 
 | Field | Value | What it does |

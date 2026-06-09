@@ -183,7 +183,22 @@ INDEX_HTML = """<!doctype html>
 <div id="echoes"></div>
 <div class="modeHint" id="modeHint"></div>
 <div id="status"></div>
-<div id="dlBar"><button id="dl" class="dl">⬇ Download MIDI</button></div>
+<div id="dlBar">
+  <button id="dl" class="dl">⬇ Download MIDI</button>
+  <button id="dlScore" class="dl" style="display:none">⬇ Download score</button>
+</div>
+<div id="scorePanel" style="display:none;margin:8px 0;padding:10px;border:1px solid #333;
+     border-radius:6px;background:#1f1f1f;max-width:460px">
+  <div style="font-size:13px;color:#bbb;margin-bottom:6px">Export MusicXML — choose voices:</div>
+  <div id="scoreVoiceList" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px"></div>
+  <div id="scoreWarn" style="display:none;font-size:12px;color:#e6a060;margin-bottom:6px"></div>
+  <label class="inline" style="font-size:12px"><input type="checkbox" id="scoreSep">
+    download each separately (.zip)</label>
+  <div style="margin-top:8px;display:flex;gap:8px">
+    <button id="scoreGo" class="dl">⬇ Download</button>
+    <button id="scoreCancel">cancel</button>
+  </div>
+</div>
 <div id="playBox" style="margin-top:10px;padding:10px;border:1px solid #333;
      border-radius:6px;background:#1f1f1f;display:none">
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -226,9 +241,9 @@ INDEX_HTML = """<!doctype html>
 <script>
 const $=(id)=>document.getElementById(id);
 const drop=$('drop'), file=$('file'), picked=$('picked'),
-      dl=$('dl'), dlBar=$('dlBar'), st=$('status'), modeHint=$('modeHint'),
+      dl=$('dl'), dlScore=$('dlScore'), dlBar=$('dlBar'), st=$('status'), modeHint=$('modeHint'),
       prEl=$('pr'), echoesEl=$('echoes');
-let dlUrl=null, dlName=null, jobId=0, previewJobId=0;
+let dlUrl=null, dlName=null, scoreNotatable=true, scoreTsig='4/4', scoreBpm=120, jobId=0, previewJobId=0;
 const inputs=[];  // [{id, file, name, offset:number, kind:'file'|'rec'}]
 let nextInputId=1;
 let originalNotes=[];   // flat union of all included inputs (kept for snap helpers)
@@ -994,6 +1009,14 @@ async function runPreview() {
     }
     rebuildRows();
     dlUrl = j.midi_data_url; dlName = j.midi_filename;
+    scoreNotatable = j.score_notatable !== false;
+    scoreTsig = (String(j.detected_ts || '4/4').split(' ')[0]) || '4/4';
+    scoreBpm = Number(j.bpm) || 120;
+    const haveVoices = j.voices && j.voices.length > 0;
+    dlScore.style.display = haveVoices ? '' : 'none';
+    dlScore.textContent = scoreNotatable ? '⬇ Download score' : '⬇ Download score (approx.)';
+    dlScore.title = 'Export selected voices to MusicXML (MuseScore, Sibelius, Finale, Dorico…)';
+    $('scorePanel').style.display = 'none';
     dlBar.style.display = 'block';
   } catch (e) {
     if (mine === previewJobId) setStatus('preview error: '+e.message, true);
@@ -1097,6 +1120,7 @@ async function refreshPreview() {
   originalNotes=[]; processedVoices=null;
   rebuildRows(); prEl.classList.add('empty');
   dlBar.style.display='none'; dlUrl=null; dlName=null;
+  dlScore.style.display='none'; $('scorePanel').style.display='none';
   setStatus('loading preview...');
   const fd = new FormData();
   inputs.forEach((inp, i) => fd.append('mid_'+i, inp.file, inp.name));
@@ -1193,6 +1217,86 @@ dl.addEventListener('click',()=>{
   if(!dlUrl)return;
   const a=document.createElement('a');a.href=dlUrl;a.download=dlName;a.click();
 });
+dlScore.addEventListener('click',()=>{
+  const p=$('scorePanel');
+  if(getComputedStyle(p).display==='none') openScorePanel();
+  else p.style.display='none';
+});
+$('scoreCancel').addEventListener('click',()=>{ $('scorePanel').style.display='none'; });
+$('scoreGo').addEventListener('click', exportScore);
+
+// Output voices that actually produced notes, in echo order. Each is its own
+// independent line — the user picks which to merge into one score (multi-staff)
+// or download separately, so polyrhythms aren't forced onto a shared barline.
+function currentScoreVoices(){
+  const out=[];
+  for(let i=0;i<echoes.length;i++){
+    if(echoes[i] && echoes[i].include===false) continue;
+    const v=processedVoices && processedVoices[i+1];
+    if(v && v.notes && v.notes.length) out.push({idx:i, label:'echo '+(i+1), notes:v.notes});
+  }
+  return out;
+}
+function cleanStem(name){
+  let n=String(name||'');
+  const dot=n.lastIndexOf('.'); if(dot>0) n=n.slice(0,dot);
+  n=n.replace(/[^A-Za-z0-9._-]+/g,'_').replace(/^[._-]+|[._-]+$/g,'');
+  return n || 'voice';
+}
+// Each echo derives from one input; name its file after THAT instrument, not
+// always the first. Falls back to the first input when no source was picked.
+function sourceStemForEcho(i){
+  const e=echoes[i];
+  let inp=null;
+  if(e && e.source_id!=null) inp=inputs.find(x=>x.id===e.source_id);
+  if(!inp) inp=inputs[0];
+  return cleanStem(inp && inp.name);
+}
+function openScorePanel(){
+  const list=$('scoreVoiceList'); list.innerHTML='';
+  const voices=currentScoreVoices();
+  if(!voices.length){ setStatus('nothing to export — generate first', true); return; }
+  voices.forEach(v=>{
+    const row=document.createElement('label');
+    row.className='inline'; row.style.fontSize='13px';
+    row.innerHTML='<input type="checkbox" checked data-vidx="'+v.idx+'"> '+
+      v.label+' <span style="color:#777">('+v.notes.length+' notes)</span>';
+    list.appendChild(row);
+  });
+  const warn=$('scoreWarn');
+  if(!scoreNotatable){ warn.style.display='';
+    warn.textContent="ⓘ some ratios are irrational. Downloaded separately they stay clean — the ratio becomes each voice's tempo. Merging them onto one staff quantizes the rhythm instead."; }
+  else warn.style.display='none';
+  $('scorePanel').style.display='';
+}
+async function exportScore(){
+  const checked=[...$('scoreVoiceList').querySelectorAll('input[data-vidx]:checked')]
+    .map(c=>+c.dataset.vidx);
+  if(!checked.length){ setStatus('select at least one voice', true); return; }
+  const sep=$('scoreSep').checked;
+  // Name each file after its own source instrument, numbering only on collision.
+  const counts={};
+  const uniq=(b)=>{ counts[b]=(counts[b]||0)+1; return counts[b]===1 ? b : b+'_'+counts[b]; };
+  const voices=checked.map(idx=>({
+    name: uniq(sourceStemForEcho(idx)),
+    notes: processedVoices[idx+1].notes,
+    scale: String((echoes[idx] && echoes[idx].scale) || '1'),
+  }));
+  const stem = voices[0] ? voices[0].name : 'polytime';
+  setStatus('building score…');
+  const fd=new FormData();
+  fd.append('payload', JSON.stringify({ stem, mode: sep?'separate':'merge', tsig: scoreTsig, bpm: scoreBpm, voices }));
+  let j;
+  try{
+    const r=await fetch('/export_score',{ method:'POST', body:fd });
+    j=await r.json();
+    if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
+  }catch(e){ setStatus('score export failed: '+e.message, true); return; }
+  const a=document.createElement('a');
+  a.href='data:'+j.mime+';base64,'+j.data_b64; a.download=j.filename; a.click();
+  $('scorePanel').style.display='none';
+  setStatus('downloaded '+j.filename);
+}
 
 // ── Update check ────────────────────────────────────────────────────────
 // Polls /version once on load; if the server says a newer GitHub release
@@ -1853,6 +1957,91 @@ def _voices_from_midi(path: Path) -> tuple[list[dict], float, int, int]:
     return voices, max(max_end, 4.0), min(all_pitches), max(all_pitches)
 
 
+def _notes_to_midi_bytes(
+    voices: list[dict], ts: TimeSignature, bpm: float = 120.0
+) -> bytes:
+    """Build a Type-1 MIDI (one named track per voice) from note lists.
+
+    `voices` is [{name, notes:[{midi, on, off}]}] with on/off in beats — the
+    shape the client already holds per output voice. The track name becomes the
+    part/staff name when the MIDI is rendered to MusicXML, so callers pass clean
+    stem-based names. Tempo is playback metadata only; the time signature drives
+    how the score is barred.
+    """
+    import io
+    import mido
+
+    PPQ = 480
+    mf = mido.MidiFile(ticks_per_beat=PPQ, type=1)
+    meta = mido.MidiTrack()
+    meta.append(mido.MetaMessage(
+        "set_tempo", tempo=int(round(60_000_000 / max(bpm, 1e-6))), time=0))
+    meta.append(mido.MetaMessage(
+        "time_signature", numerator=ts.numerator, denominator=ts.denominator,
+        clocks_per_click=24, notated_32nd_notes_per_beat=8, time=0))
+    meta.append(mido.MetaMessage("end_of_track", time=0))
+    mf.tracks.append(meta)
+
+    for v in voices:
+        tr = mido.MidiTrack()
+        tr.append(mido.MetaMessage("track_name", name=str(v.get("name") or "voice"), time=0))
+        evs: list[tuple[int, "mido.Message"]] = []
+        for n in v.get("notes", []):
+            on_tick = max(0, int(round(float(n["on"]) * PPQ)))
+            off_tick = max(on_tick + 1, int(round(float(n["off"]) * PPQ)))
+            evs.append((on_tick, mido.Message("note_on", note=int(n["midi"]), velocity=80)))
+            evs.append((off_tick, mido.Message("note_off", note=int(n["midi"]), velocity=0)))
+        evs.sort(key=lambda e: (e[0], 0 if e[1].type == "note_off" else 1))
+        prev = 0
+        for tick, msg in evs:
+            tr.append(msg.copy(time=tick - prev))
+            prev = tick
+        tr.append(mido.MetaMessage("end_of_track", time=0))
+        mf.tracks.append(tr)
+
+    buf = io.BytesIO()
+    mf.save(file=buf)
+    return buf.getvalue()
+
+
+def _safe_stem(s: str) -> str:
+    """Filename-safe stem from a (possibly messy) input name."""
+    import re
+    stem = Path(str(s or "")).stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    return stem or "polytime"
+
+
+def _unstretch_voice(v: dict, bpm: float) -> tuple[list[dict], float]:
+    """Recover a voice's original rhythm and the tempo that voices it.
+
+    An echo at scale `s` is its source stretched ×s. Dividing every onset and
+    duration by `s` (after shifting its entry to bar 1) puts the notes back on
+    their natural intervals, and the implied tempo `bpm / s` reproduces the same
+    real-time speed. So the engraving shows clean note values plus a tempo mark —
+    no tuplet soup, and irrational ratios become an unusual tempo, not unnotatable
+    rhythm.
+
+    Returns (notes, tempo_bpm).
+    """
+    notes = v.get("notes") or []
+    try:
+        s = float(parse_scale(str(v.get("scale", "1")).strip() or "1", bpm))
+    except Exception:
+        s = 1.0
+    if s <= 0:
+        s = 1.0
+    if notes:
+        shift = min(float(n["on"]) for n in notes)
+        notes = [
+            {"midi": n["midi"],
+             "on": (float(n["on"]) - shift) / s,
+             "off": (float(n["off"]) - shift) / s}
+            for n in notes
+        ]
+    return notes, bpm / s
+
+
 def _merge_inputs(items: list[dict], *, respect_include: bool = True) -> Path:
     """Merge multiple input MIDIs into a single Type-1 file, applying each
     item's `offset` (beats). When `respect_include` is True (the default),
@@ -2118,6 +2307,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_preview()
             elif self.path == "/split_score":
                 self._handle_split_score()
+            elif self.path == "/export_score":
+                self._handle_export_score()
             elif self.path == "/process":
                 self._handle_process()
             elif self.path == "/download_update":
@@ -2172,6 +2363,87 @@ class Handler(BaseHTTPRequestHandler):
                 for name, data in voices
             ],
         }
+        self._send(200, json.dumps(payload).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+    def _handle_export_score(self):
+        """Export chosen output voices to MusicXML.
+
+        Body: a `payload` JSON field with {stem, tsig, bpm, mode, voices}, where
+        voices is [{name, notes:[{midi,on,off}], scale}].
+
+        - mode "merge": the selected voices share one timeline (their notes stay
+          stretched) on a multi-staff score — for voices that share a pulse.
+        - mode "separate": a zip of one .musicxml per voice, each voice notated at
+          its *original* rhythm (un-stretched by its scale) with a tempo mark
+          carrying the speed. Because nothing is stretched, even irrational ratios
+          notate cleanly — the ratio lives in the tempo, not the note values.
+        """
+        import io
+        import zipfile
+
+        fields = self._read_fields()
+        raw = (fields.get("payload") or b"{}")
+        if isinstance(raw, tuple):
+            raw = raw[1]
+        try:
+            spec = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"bad export payload: {e}")
+        voices = spec.get("voices") or []
+        if not voices:
+            raise ValueError("select at least one voice to export")
+        mode = spec.get("mode", "merge")
+        stem = _safe_stem(spec.get("stem") or "polytime")
+        ts = parse_ts(spec.get("tsig")) or TimeSignature(4, 4)
+        try:
+            bpm = float(spec.get("bpm") or 120.0)
+        except (TypeError, ValueError):
+            bpm = 120.0
+
+        from score_io.serializers.musicxml import from_midi_file
+
+        def to_xml(vlist: list[dict], tempo: float) -> bytes:
+            fd, tmp = tempfile.mkstemp(suffix=".mid")
+            os.close(fd)
+            try:
+                Path(tmp).write_bytes(_notes_to_midi_bytes(vlist, ts, tempo))
+                return from_midi_file(tmp)
+            finally:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+        if mode == "separate":
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                used: set[str] = set()
+                for i, v in enumerate(voices, 1):
+                    notes, tempo = _unstretch_voice(v, bpm)
+                    fname = _safe_stem(v.get("name") or f"{stem}_{i}")
+                    # Guard against any client-side dedupe slip so no entry is lost.
+                    base, k = fname, 2
+                    while fname in used:
+                        fname = f"{base}_{k}"; k += 1
+                    used.add(fname)
+                    z.writestr(
+                        f"{fname}.musicxml",
+                        to_xml([{"name": fname, "notes": notes}], tempo),
+                    )
+            data = buf.getvalue()
+            payload = {
+                "filename": f"{stem}_scores.zip",
+                "mime": "application/zip",
+                "data_b64": base64.b64encode(data).decode("ascii"),
+            }
+        else:
+            xml = to_xml(voices, bpm)
+            payload = {
+                "filename": f"{stem}.musicxml",
+                "mime": "application/vnd.recordare.musicxml+xml",
+                "data_b64": base64.b64encode(xml).decode("ascii"),
+            }
         self._send(200, json.dumps(payload).encode("utf-8"),
                    "application/json; charset=utf-8")
 
@@ -2446,6 +2718,18 @@ class Handler(BaseHTTPRequestHandler):
                 try: p.unlink()
                 except OSError: pass
 
+        # Are all echo ratios exactly notatable? Irrational ones (sqrt(2), most
+        # bpm targets) still export, but only as a quantized approximation — flag
+        # that so the UI can say so rather than imply a faithful score.
+        try:
+            _scales = [parse_scale(str(e.get("scale", "")).strip(), base_bpm)
+                       for e in echoes_list]
+            score_notatable = all(
+                s.limit_denominator(64).denominator <= 16 for s in _scales
+            )
+        except Exception:
+            score_notatable = True
+
         payload = {
             "voices": voices_payload,
             "total_beats": total_beats,
@@ -2455,6 +2739,8 @@ class Handler(BaseHTTPRequestHandler):
             "midi_data_url": "data:audio/midi;base64," +
                              base64.b64encode(mid_data).decode("ascii"),
             "midi_filename": f"{stem}_polytime.mid",
+            "score_notatable": score_notatable,
+            "bpm": base_bpm,
             "detected_ts": ts_label,
         }
         self._send(200, json.dumps(payload).encode("utf-8"),
