@@ -343,7 +343,7 @@ def polytime(
         parts=parts, metadata={},
     )
 
-    out = Path(out) if out else input_path.with_name(f"{input_path.stem}_polytime.mid")
+    out = Path(out) if out else input_path.with_name(f"{input_path.stem}_tiago.mid")
     save_mido(poly, str(out))
     
     return out
@@ -357,7 +357,7 @@ def main():
     ap.add_argument("--scale", default="3/2",
                     help="rhythm scale (3/2 = 1.5× slower, 2 = 2× slower, 2/3 = faster)")
     ap.add_argument("-o", "--out", default=None,
-                    help="output MIDI path (default: <input>_polytime.mid)")
+                    help="output MIDI path (default: <input>_tiago.mid)")
     ap.add_argument("--time-sig", default=None,
                     help="override the file's time signature (e.g. 3/4); "
                          "default: read from the MIDI file's meta-event, "

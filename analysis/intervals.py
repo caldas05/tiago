@@ -7,7 +7,7 @@ histogram per pair, plus a per-tick dissonance curve using configurable
 weights.
 
 Why pitch classes (mod 12) rather than absolute intervals: composers using
-polytime care that "the echo sounds a fifth above" — the octave register is
+TIAGO care that "the echo sounds a fifth above" — the octave register is
 incidental to the relationship. Octaves and unisons collapse to bin 0.
 """
 from __future__ import annotations

@@ -2,7 +2,7 @@
 sounding MIDI pitches. Substrate for every other analysis metric.
 
 We don't use numpy — the grid is small (a few thousand ticks at most for
-typical polytime outputs, since ticks_per_beat is denominator-capped) and a
+typical TIAGO outputs, since ticks_per_beat is denominator-capped) and a
 list-of-sets keeps the interval pass branchless and stdlib-only.
 """
 from __future__ import annotations

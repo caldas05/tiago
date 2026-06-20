@@ -3,7 +3,7 @@
 Two entry points:
 
   - `from_midi_file(path)` renders a finished MIDI file (one track per voice) to
-    MusicXML. This is what the app uses to offer a "Download score" of a polytime
+    MusicXML. This is what the app uses to offer a "Download score" of a voice
     result: music21 reads the multi-track MIDI as one part per track and engraves
     it. Onsets/durations are quantized to 16ths + triplet-eighths so the result is
     readable — irrational echo ratios collapse to their nearest notatable value

@@ -1,11 +1,11 @@
-# Build polytime binaries for Windows, macOS, and Linux on every version tag.
+# Build tiago binaries for Windows, macOS, and Linux on every version tag.
 #
 # Usage:
 #   git tag v0.1.0
 #   git push --tags
 #
 # 5–10 minutes later a Draft Release appears on GitHub with three assets:
-# polytime-windows.zip, polytime-macos.dmg, polytime-linux.zip. Edit the
+# tiago-windows.zip, tiago-macos.dmg, tiago-linux.zip. Edit the
 # release notes and click Publish.
 name: build & release
 
@@ -21,15 +21,15 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            asset: polytime-windows
+            asset: tiago-windows
             sep: ";"
             ext: ".exe"
           - os: macos-latest      # arm64 — Apple Silicon (M1/M2/M3/M4)
-            asset: polytime-macos
+            asset: tiago-macos
             sep: ":"
             ext: ""
           - os: ubuntu-latest
-            asset: polytime-linux
+            asset: tiago-linux
             sep: ":"
             ext: ""
     runs-on: ${{ matrix.os }}
@@ -75,9 +75,9 @@ jobs:
         run: |
           if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
             # Drop --onefile on macOS so PyInstaller emits a proper
-            # dist/polytime.app bundle — Gatekeeper handles app bundles much
+            # dist/tiago.app bundle — Gatekeeper handles app bundles much
             # more gracefully than raw Mach-O blobs.
-            python -m PyInstaller --windowed --name polytime \
+            python -m PyInstaller --windowed --name tiago \
               --add-data "model:model" \
               --add-data "transforms:transforms" \
               --add-data "score_io:score_io" \
@@ -85,7 +85,7 @@ jobs:
               --hidden-import music21 \
               app.py
           else
-            python -m PyInstaller --onefile --noconsole --name polytime \
+            python -m PyInstaller --onefile --noconsole --name tiago \
               --add-data "model${{ matrix.sep }}model" \
               --add-data "transforms${{ matrix.sep }}transforms" \
               --add-data "score_io${{ matrix.sep }}score_io" \
@@ -101,17 +101,17 @@ jobs:
           if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
             # Lay out a drag-to-install DMG: app bundle + /Applications shortcut.
             mkdir dmg_root
-            cp -R "dist/polytime.app" dmg_root/
+            cp -R "dist/tiago.app" dmg_root/
             ln -s /Applications dmg_root/Applications
             # Strip any quarantine/finder xattrs the runner may have added so
             # the bundle ships clean. Best-effort; ignore failures.
-            xattr -cr dmg_root/polytime.app || true
-            hdiutil create -volname polytime \
+            xattr -cr dmg_root/tiago.app || true
+            hdiutil create -volname tiago \
               -srcfolder dmg_root \
               -ov -format UDZO \
-              staging/polytime.dmg
+              staging/tiago.dmg
           else
-            cp "dist/polytime${{ matrix.ext }}" staging/
+            cp "dist/tiago${{ matrix.ext }}" staging/
             cp README.md staging/
             cp frere.mid staging/
           fi
@@ -137,9 +137,9 @@ jobs:
           cd artifacts
           for dir in */; do
             name="${dir%/}"
-            if [[ "$name" == "polytime-macos" ]]; then
+            if [[ "$name" == "tiago-macos" ]]; then
               # macOS ships the .dmg directly — no double-zip.
-              cp "$dir/polytime.dmg" "${name}.dmg"
+              cp "$dir/tiago.dmg" "${name}.dmg"
             else
               (cd "$dir" && zip -r "../${name}.zip" .)
             fi

@@ -1,18 +1,30 @@
-# polytime
+# TIAGO
 
-Drop a MIDI file, get a rhythm-scaled echo (or a stack of them) layered against the original. Runs entirely on your machine — the browser UI is just a local web page served by a tiny Python server.
+**TI**me **AG**nostic **O**perator. Drop a MIDI file, get a rhythm-scaled echo (or a stack of them) layered against the original. Runs entirely on your machine — the browser UI is just a local web page served by a tiny Python server.
 
 ## What it does
 
-Given a theme, polytime adds one or more **echo voices**, each entering at its own time, playing at its own rhythmic scale, and optionally transformed in pitch (transpose / chromatic inversion).
+Given a theme, TIAGO adds one or more **voices**, each entering at its own time, playing at its own rhythmic scale, and optionally transformed in pitch (transpose / chromatic inversion).
 
-- A **scale** of `3/2` plays the echo 1.5× slower; `2` is twice as slow; `2/3` is 1.5× faster.
-- Scales accept decimals (`1.5`), math (`sqrt(2)`, `2**(1/12)`, `pi/3`), or absolute BPM targets (`60bpm` → "play this voice at 60 BPM regardless of source tempo").
-- A **pitch** op transposes (`t+7` = up a fifth, `t-12` = down an octave) or inverts (`i@C4` = mirror around C4 chromatically).
+- A **scale** of `3/2` plays the voice 1.5× slower; `2` is twice as slow; `2/3` is 1.5× faster.
+- Scales accept decimals (`1.5`), math (`sqrt(2)`, `2**(1/12)`, `pi/3`), or absolute BPM targets (`60bpm`).
+- A **pitch** op transposes (`+7` semitones = up a fifth) or inverts chromatically around an axis (e.g. C4: G4 → F3).
 
-Each echo voice is written to its **own named MIDI track**, so any DAW imports them as separable clips you can solo, mute, route, or reassign instruments to independently.
+Each voice is written to its **own named MIDI track**, so any DAW imports them as separable clips you can solo, mute, route, or reassign instruments to independently.
+
+**🎯 Polytemporal alignment.** Beyond manually chosen scales, TIAGO ships a *constructive-inversion* generator: tell it where you want voices to coincide (`0b, 4b, 10b` or `0.4, 0.5, 0.7, 1.4`) and it computes the scales and entry points for you.
+
+- **Subharmonic cover** — voices all start at beat 0, each pulsing at a subharmonic of a common base tempo (with rational harmonics `h·r/a` where pure subharmonics fall short). Every prescribed point is hit by ≥ 2 voices simultaneously. Dense, hocketed texture.
 
 ## Running it
+
+### Standalone binary (no Python needed)
+
+Grab the right asset from the [Releases](../../releases) page:
+
+- **Windows** — `tiago-windows.zip` → `tiago.exe`. Double-click. First launch SmartScreen will warn "unrecognized app" — click *More info → Run anyway*.
+- **macOS (Apple Silicon: M1/M2/M3/M4)** — `tiago-macos.dmg`. Double-click to mount, drag `tiago.app` into the `Applications` shortcut, eject. First launch: open `Applications`, **right-click** `tiago` → *Open* → click *Open* in the warning dialog. After that, double-click works. Intel Macs aren't supported — run from source instead.
+- **Linux** — `tiago-linux.zip` → `tiago`. `chmod +x tiago && ./tiago`.
 
 ### From source
 
@@ -21,109 +33,87 @@ pip install -r requirements.txt
 python app.py
 ```
 
-A browser tab opens at `http://127.0.0.1:<port>`. polytime tries to open Chrome / Edge / Brave / Chromium first (for MIDI keyboard support), falling back to your system default.
-
-Drop a `.mid` file, a score (`.musicxml` / `.xml` / `.mxl`), or use the MIDI-keyboard recorder. A dropped score is split into **one source per voice** — every part, staff, and inner voice becomes its own input row, so you can echo some lines and leave others alone (e.g. canon the soprano against an untouched bass).
-
-### As a standalone binary (no Python needed)
-
-Grab the right asset from the [Releases](../../releases) page:
-
-- **Windows:** `polytime-windows.zip` → `polytime.exe`. Double-click. First launch SmartScreen will warn "unrecognized app" — click *More info → Run anyway*.
-- **macOS (Apple Silicon — M1/M2/M3/M4):** `polytime-macos.dmg`. Double-click to mount, drag `polytime.app` into the `Applications` shortcut, eject. First launch: open `Applications`, **right-click** `polytime` → *Open* → click *Open* in the warning dialog. (Mac blocks unsigned apps on a normal double-click; right-click → Open is the one-time override. After that, double-click works forever.) Intel Macs aren't supported — run from source instead.
-- **Linux:** `polytime-linux.zip` → `polytime`. `chmod +x polytime && ./polytime`.
+A browser tab opens at `http://127.0.0.1:<port>`.
 
 ### Browser support
 
-| Browser | File drop, polytime, download | Internal-synth playback | External MIDI device output | MIDI keyboard recording |
+| Browser | File drop · voices · download | Internal-synth playback | External MIDI output | MIDI keyboard recording |
 |---|---|---|---|---|
 | Chrome / Edge / Brave / Opera | ✅ | ✅ | ✅ | ✅ |
 | Safari | ✅ | ✅ | ❌ | ❌ |
 | Firefox | ✅ | ✅ | ❌ | ❌ |
 
-Safari and Firefox don't ship the Web MIDI API. Everything in polytime works in them **except** sending playback to an external MIDI device and recording from a hardware keyboard. The internal synth still plays things back through the tab.
+Safari and Firefox don't ship the Web MIDI API. Everything in TIAGO works in them **except** sending playback to an external MIDI device and recording from a hardware keyboard.
 
-### Building binaries yourself
+## The UI, top to bottom
 
-- **Windows, local:** `pip install -r requirements-dev.txt`, then `.\build.bat` → `dist\polytime.exe`.
-- **All three platforms, in CI:** push a version tag and GitHub Actions builds them for you:
-  ```bash
-  git tag v0.3.2
-  git push --tags
-  ```
-  A draft release with Windows / macOS / Linux artifacts appears under [Releases](../../releases) ~5–10 min later. See [`.github/workflows/release.yml`](.github/workflows/release.yml).
+### 1. Drop zone
 
-## The UI
+Drop one or more `.mid` files or scores (`.musicxml` / `.xml` / `.mxl`), or click to choose. A dropped score is split into one input voice per part / staff / inner-voice — every line becomes its own row you can echo or leave alone. The drop zone shrinks to a thin strip after the first input lands.
 
-The page is intentionally minimal. Top to bottom:
+### 2. MIDI keyboard recorder (Chromium browsers only)
 
-### Inputs
+Plug a keyboard in, click **● Record**, play, **■ Stop**. The recording is added to the input list at a provisional 120 BPM. To set the real tempo, click **▶ tap a bar** on that input's row, then drop **two clicks one bar apart** on the recording's row in the piano roll. TIAGO measures the span between them, computes the BPM, and re-stamps the MIDI. Re-tap any time to refine.
 
-- **Drop zone** — drop one or more `.mid` files or scores (`.musicxml` / `.xml` / `.mxl`), or click to choose. Multiple files are merged as parallel input voices (each gets its own row in the piano roll); a score is exploded into one input voice per part/staff/voice.
-- **MIDI keyboard panel** (Chromium browsers only) — appears automatically when Web MIDI is supported. Plug a keyboard in, click **● Record**, play, click **■ Stop**. The recording is added as a new input.
-  - **bpm** controls how millisecond timing maps to musical beats in the saved MIDI. *It does not change how your recording sounds* — the wall-clock rhythm is preserved exactly. It only affects where bar lines appear, what `at 2b` means in seconds, and how a DAW labels note durations. If you don't know your tempo, leave it at 120 and use `at 2s` (seconds) for echo entries.
-  - **🔊 Monitor input** echoes your keystrokes to the playback output as you play, so you hear yourself.
+The **🔊 Monitor input** checkbox echoes your keystrokes through the playback output as you play, so you hear yourself.
 
-### Echoes
+### 3. Voices
 
-Click **+ add polytime** to add an echo voice. Each echo has:
+Click **+ add voice** for a manually configured voice. Each row shows:
 
-- **source** — which input to scale (defaults to the first input).
-- **scale** — the rhythm multiplier (`3/2`, `2`, `sqrt(2)`, `60bpm`, etc.).
-- **pitch** — optional pitch op:
-  - `none` (default) — keep original pitches.
-  - `transpose` — semitone shift (`+7` = up a fifth, `-12` = down an octave).
-  - `invert (chromatic)` — mirror every pitch around an axis (e.g. axis = C4 maps G4 → F3).
-- **range** — which beat range of the source to use (leave empty for the whole input). Click **pick** to draw the range directly on the piano roll.
-- **at** — when this echo enters, in beats (no suffix), bars (`2b`), or seconds (`2s`).
-- **include** — uncheck to mute this echo without removing it.
+- a coloured numbered circle — **click to mute/unmute** this voice
+- **source** — which input to echo
+- **scale** — the rhythm multiplier (`3/2`, `sqrt(2)`, `60bpm`, …)
+- **🔁** — per-voice loop. When on, the voice restarts as soon as its content ends. Multiple loopers at different scales generate a continuous polyrhythmic texture.
+- **⋯** — expand for the rest of the controls:
+  - **range** — which beat range of the source to use (empty = whole input). Click **pick** to draw on the piano roll.
+  - **start** — when this voice enters: beats (`6`), bars (`2b`), or seconds (`2s`).
+  - **pitch** — `none`, `transpose ±N semitones`, or `invert (chromatic)` around an axis.
+- **×** — delete
 
-### Extra options
+### 4. Polytemporal alignment
 
-Collapsed by default — click **extra options** to reveal:
+Always-visible card under the voices once you have an input. Fill in:
 
-- **time signature** — overrides the file's meta-event (otherwise auto-detected, default 4/4). *Purely cosmetic*: it only changes where bar lines fall in the piano roll and the bar grouping in the exported MIDI. It does not change pitch or timing of any note. Useful when an echo's scale interacts musically with a non-4/4 meter, or when the file's tagged meter is wrong.
-- **output crop (beats)** — trims the final MIDI to a beat range. Example: `0..16` exports only the first 16 beats. Leave empty to export everything.
+- **source** — which input the generated voices echo
+- **alignment points** — comma-separated beats where voices should coincide. Suffix `b` = bars (`0b, 4b, 10b`); plain numbers are beats (`0, 1/3, 2/3, 1`). Include `0` to anchor a voice on the downbeat; omit it and voices enter mid-piece.
+- **base tempo counts** — treats the implicit base r as one of the voices, so each point only needs *one* selected tempo on it
 
-### Live playback
+Click **Generate**. The computed voices are added to the list above with their scales and starts filled in.
 
-Plays whatever's currently in the piano roll. The internal synth always works (uses Web Audio). On Chromium browsers you can additionally route to any system MIDI device (a GM synth, an IAC bus, etc.).
+### 5. Live playback
 
-Standard transport controls: ▶ play, ⏸ pause, ⏹ stop, speed slider, volume, loop toggle.
+Internal synth always available. On Chromium browsers you can additionally route to any system MIDI device. **▶ Play / ⏸ Pause / ⏹ Stop**, speed and volume sliders. Looping is **per-voice** (the 🔁 on each row) — there is no global loop. A looping voice keeps cycling while you change settings on the others.
 
-### Piano roll
+### 6. Piano roll
 
-One canvas, one row per echo plus a **combined overlay** row at the bottom. Defaults to *combined only* — uncheck the box to expand into per-voice rows.
+One row per voice plus a *combined* overlay. **Drag** to pan, **scroll** to zoom toward the cursor. **Pick** buttons on voices put the roll into pick mode — click two points to define a range, or click once to set a start.
 
-- **Drag** to pan, **scroll** to zoom toward the cursor.
-- **Click** sets a selection start; clicking again sets the end. Drag for free-precision range. The selection auto-fills the echo's source `range` (when "pick" mode is active).
-- Each row sizes its pitch axis to its own notes, so transposed/inverted echoes always fit inside their row.
+### 7. Footer
 
-### Download
+- **⬇ Download MIDI** — one MIDI track per input + one per voice, each named so a DAW imports them as separable clips.
+- **⬇ Download score** — MusicXML. A panel lets you tick voices to include and choose:
+  - *Download each separately* (a `.zip` of one `.musicxml` per voice) — each notated at its original rhythm with a tempo mark carrying its speed. Irrational ratios like `sqrt(2)` engrave cleanly because the ratio lives in the tempo (♩≈84.85), not in unnotatable rhythm.
+  - *Merge* — all ticked voices on one multi-staff score aligned on a shared pulse and quantized to 16ths/triplets. Reads best when scales are compatible (rational, near each other).
+- **extra options** — *time signature* override (cosmetic: barring only) and *output crop* (trim final MIDI to a beat range, e.g. `0..16`).
+- **× Quit** — stops the server and closes TIAGO.
 
-After processing, **⬇ Download MIDI** appears above the piano roll. The export contains one MIDI track per input + one per echo, each named (`theme`, `echo_1_x3/2@8_t+7`, …) so a DAW shows them as separable, soloable clips.
-
-**⬇ Download score** exports **MusicXML** — opens in MuseScore, Sibelius, Finale, Dorico, and most notation software. It opens a small panel where you tick which output voices to include. Two ways out:
-
-- **Download each separately** (a `.zip` of one `.musicxml` per voice) — each voice is notated at its **original rhythm** with a **tempo mark** carrying its speed (a `3/2` echo becomes the theme at ♩=80; a `60bpm` echo at ♩=60). Nothing is stretched, so the note values stay clean — even irrational ratios like `sqrt(2)` engrave perfectly, with the ratio living in the tempo (♩≈84.85) rather than in unnotatable rhythm.
-- **Merge** the ticked voices into one multi-staff score, aligned in real time on a shared pulse — best when the voices share a compatible meter. Here the rhythms *are* stretched onto one grid (and quantized to 16ths/triplets), so it reads well only for compatible ratios.
-
-Each separate file is named after its **source instrument** (`Violin.musicxml`, `Piano.musicxml`, …), numbered only when one source feeds several voices (`Violin_2.musicxml`).
-
-## Examples
+## Quick reference
 
 | Field | Value | What it does |
 |---|---|---|
-| at | `2b` | echoes enter at bar 2, 4, 6, … |
-| at | `2b, 5b, 9b` | per-voice entry times |
+| start | `2b` | voice enters at bar 2 |
+| start | `1.5` | voice enters at beat 1.5 |
 | scale | `3/2` | 1.5× slower |
 | scale | `sqrt(2)` | irrational stretch — never realigns with the theme |
 | scale | `60bpm` | absolute tempo target |
 | scale | `2**(1/12)` | one-semitone temporal shift (equal-tempered) |
-| pitch | `transpose +12` | up an octave |
-| pitch | `invert · axis C4` | mirror around C4: G4 → F3, A4 → D#3 |
+| pitch | `t+12` | up an octave |
+| pitch | `i@C4` | invert chromatically around C4 |
+| alignment points | `0b, 4b, 12b` | voices coincide at bars 1, 5, 13 |
+| alignment points | `0, 1/3, 2/3, 1` | voices coincide at those beats |
 
-## CLI (no UI)
+## CLI (alternative to the UI)
 
 ```bash
 python polytime.py input.mid --at 2b --scale 3/2 --pitch-op t+7
@@ -131,21 +121,24 @@ python polytime.py input.mid --at 2b --scale 3/2 --pitch-op t+7
 
 Flags: `--at`, `--scale`, `--out`, `--pitch-op`, `--time-signature`, `--bpm`. See `python polytime.py --help`.
 
-## Project layout
+## Building binaries yourself
 
-- `app.py` — local web server + single-page UI (drag-drop, recorder, viz, live playback).
-- `polytime.py` — the transform engine and CLI.
-- `model/`, `transforms/`, `score_io/`, `teoria/` — score model, transforms, MIDI I/O, music theory primitives.
-- `analysis/` — scaffolding for upcoming analytical features (grid, horizons, pair-intervals). Not wired into the current UI.
-- `tests/` — pytest suite. Run with `pytest tests/ -q`.
+- **Windows, local:** `pip install -r requirements-dev.txt`, then `.\build.bat` → `dist\tiago.exe`.
+- **All three platforms, in CI:** push a version tag and GitHub Actions builds them:
+  ```bash
+  git tag v0.4.0
+  git push --tags
+  ```
+  A draft release with Windows / macOS / Linux artifacts appears under [Releases](../../releases) ~5–10 min later. See [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
 ## Tech notes
 
-- MIDI is read via `mido` directly (tick-accurate) rather than music21 — chords and multi-track inputs survive.
-- Output writer is `save_mido`: one MIDI track per voice, named after the voice.
-- The MIDI keyboard recorder emits a standard Type-1 SMF in pure JavaScript and feeds it into the same upload path as a dropped file.
-- The internal synth uses Web Audio (`AudioContext` / `webkitAudioContext`) — works in every modern browser including Safari and Firefox.
+- MIDI is read via `mido` directly (tick-accurate). Chords and multi-track inputs survive intact.
+- Each output voice gets its own named MIDI track via `save_mido`.
+- The MIDI keyboard recorder writes a Type-1 SMF in pure JavaScript and feeds it into the same upload path as a dropped file.
+- The internal synth uses Web Audio (`AudioContext` / `webkitAudioContext`) — works in Safari and Firefox too.
+- Constructive-inversion algorithms live in [`transforms/inversion.py`](transforms/inversion.py), covered by [`tests/test_inversion.py`](tests/test_inversion.py).
 
 ## License
 
-Add one before you publish (MIT is the standard pick for small open-source utilities).
+Add one before you publish.

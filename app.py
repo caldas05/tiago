@@ -1,4 +1,4 @@
-"""Local web UI for polytime — drag-drop a MIDI, preview, configure, generate.
+"""Local web UI for TIAGO — drag-drop a MIDI, preview, configure, generate.
 
 Run:   python app.py
 Build: build.bat  (PyInstaller --onefile --noconsole)
@@ -26,7 +26,7 @@ from pathlib import Path
 # local builds stay as "dev" — the update banner is suppressed in that case
 # so devs don't get pestered about their own work being out of date.
 VERSION = "dev"
-GITHUB_REPO = "caldas05/polytime"
+GITHUB_REPO = "caldas05/tiago"
 
 if hasattr(sys, "_MEIPASS"):
     sys.path.insert(0, sys._MEIPASS)
@@ -50,7 +50,7 @@ HEARTBEAT_CHECK_S = 10.0
 
 
 INDEX_HTML = """<!doctype html>
-<html><head><meta charset="utf-8"><title>polytime</title>
+<html><head><meta charset="utf-8"><title>TIAGO</title>
 <style>
  body{font-family:system-ui,sans-serif;margin:0;padding:18px;background:#1a1a1a;color:#eee}
  h1{margin:0 0 14px;font-size:20px}
@@ -58,6 +58,22 @@ INDEX_HTML = """<!doctype html>
        cursor:pointer;background:#222;transition:.15s;font-size:13px;color:#aaa}
  #drop.hover{border-color:#7af;background:#2a3040}
  #drop input{display:none}
+ #drop.compact{padding:6px 12px;font-size:12px;border-width:1px;border-style:solid;
+               border-color:#3a3a3a;text-align:left}
+ #drop.compact .dropHint{display:none}
+ #drop.compact .dropHintCompact{display:inline;color:#7af}
+ #drop.compact #picked{display:inline;margin:0 0 0 12px;font-size:11px;color:#888}
+ #drop .dropHintCompact{display:none}
+ #alignCard{margin:10px 0;padding:10px 12px;background:#1f2530;border:1px solid #2d3a4f;
+            border-radius:6px;display:none}
+ #alignCard.visible{display:block}
+ #alignCard h3{margin:0 0 8px;font-size:13px;color:#9bf;font-weight:500;
+               display:flex;align-items:center;gap:6px}
+ #alignCard .alignRow{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-bottom:6px}
+ #alignCard label{margin:0}
+ #alignFooter{margin-top:32px;padding-top:16px;border-top:1px solid #2a2a2a;
+              display:flex;flex-direction:column;gap:10px}
+ #alignFooter > .footRow{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
  .row{display:flex;gap:14px;margin:12px 0;flex-wrap:wrap;align-items:end}
  label{display:flex;flex-direction:column;font-size:13px;color:#aaa}
  label.inline{flex-direction:row;align-items:center;gap:6px;color:#ddd}
@@ -94,6 +110,8 @@ INDEX_HTML = """<!doctype html>
  .prCtrl button:hover{background:#444}
  .echo{display:flex;gap:10px;align-items:center;padding:6px 10px;margin:6px 0;
        background:#222;border-left:4px solid #555;border-radius:4px;flex-wrap:wrap}
+ .polytime{flex-direction:column;align-items:stretch;gap:0;padding:8px 12px;
+           flex-wrap:nowrap}
  .echo .swatch{width:14px;height:14px;border-radius:3px;flex-shrink:0}
  .echo .name{font-size:13px;color:#ddd;min-width:62px}
  .echo input[type=text]{width:90px}
@@ -103,7 +121,25 @@ INDEX_HTML = """<!doctype html>
                    border-radius:3px;cursor:pointer;font:inherit;font-size:12px}
  .echo button.mode.active{background:#7af;color:#000;border-color:#7af}
  .echo button.rm{padding:2px 8px;background:#522;color:#fcc;border:1px solid #844;
-                 border-radius:3px;cursor:pointer;font:inherit;font-size:12px;margin-left:auto}
+                 border-radius:3px;cursor:pointer;font:inherit;font-size:12px}
+ .echoHead{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+ .echoBody{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;
+           margin-top:8px;padding-top:8px;border-top:1px solid #2d2d2d}
+ .echo.collapsed .echoBody{display:none}
+ .echoColor{width:30px;height:30px;border-radius:50%;border:2px solid transparent;
+            color:#000;font-weight:700;font-size:13px;cursor:pointer;flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;line-height:1;
+            transition:.12s;padding:0}
+ .echoColor:hover{border-color:#fff}
+ .echo.muted .echoColor{opacity:.32;filter:grayscale(0.6)}
+ .echo.muted .echoHead>:not(.echoColor):not(.rm):not(.echoMore){opacity:.5}
+ .echoLoop,.echoMore{background:#333;color:#ccc;border:1px solid #555;
+                     border-radius:3px;cursor:pointer;font:inherit;font-size:13px;
+                     padding:3px 10px;line-height:1.2}
+ .echoLoop:hover,.echoMore:hover{background:#3c3c3c}
+ .echoLoop.active{background:#fc6;color:#000;border-color:#fc6}
+ .echoMore.active{background:#444;color:#fff;border-color:#666}
+ .echoSpacer{flex:1;min-width:0}
  #addEcho{padding:6px 14px;background:#2a4;color:#000;border:0;border-radius:4px;
           font:inherit;cursor:pointer}
  #addEcho:hover{background:#3b5}
@@ -125,7 +161,7 @@ INDEX_HTML = """<!doctype html>
 <body>
 <div id="updateBanner">
   <div class="ub-msg">
-    🆕 polytime <b id="ubVersion">v?</b> is available.
+    🆕 TIAGO <b id="ubVersion">v?</b> is available.
     <span class="ub-hint" id="ubHint"></span>
   </div>
   <button class="ub-dl" id="ubDl">Download</button>
@@ -133,9 +169,10 @@ INDEX_HTML = """<!doctype html>
   <button class="ub-close" id="ubClose" title="Hide until next launch">×</button>
   <div class="ub-status" id="ubStatus"></div>
 </div>
-<h1>polytime — rhythm-scaled MIDI echoes</h1>
+<h1>TIAGO — TIme AGnostic Operator</h1>
 <div id="drop">
-  <div>Drop .mid or score (.musicxml / .xml / .mxl) files, or click</div>
+  <div class="dropHint">Drop .mid or score (.musicxml / .xml / .mxl) files, or click</div>
+  <span class="dropHintCompact">+ add more files</span>
   <div id="picked" style="margin-top:6px;color:#7af;font-size:13px"></div>
   <input id="file" type="file" accept=".mid,.midi,audio/midi,.musicxml,.xml,.mxl" multiple style="display:none">
 </div>
@@ -147,13 +184,12 @@ INDEX_HTML = """<!doctype html>
     <span id="recDevice" style="font-size:12px;color:#7af">searching…</span>
     <button id="recBtn" disabled>● Record</button>
     <button id="recStop" disabled>■ Stop</button>
-    <label class="inline">bpm
-      <input id="recBpm" type="number" value="120" min="20" max="400" style="width:70px">
-    </label>
     <label class="inline" title="Hear what you play through the internal synth">
       <input id="recMonitor" type="checkbox" checked> 🔊 Monitor input
     </label>
     <span id="recStatus" style="font-size:12px;color:#aaa"></span>
+    <span style="font-size:11px;color:#666"
+          title="After recording, click ▶ tap a bar in the input row and drop two clicks one bar apart on the piano roll. The tempo follows.">tempo: tap a bar after recording</span>
   </div>
 </div>
 <div id="recNotSupported" style="margin-top:6px;font-size:12px;color:#888;display:none">
@@ -161,44 +197,36 @@ INDEX_HTML = """<!doctype html>
   Everything else works — drop a <code>.mid</code> file above. For keyboard recording, reopen in Chrome / Edge / Brave.
 </div>
 <div class="row">
-  <button id="addEcho">+ add polytime</button>
-  <button id="quit" style="background:#444;color:#ccc;margin-left:auto"
-          title="Stop the server and close polytime">× Quit</button>
+  <button id="addEcho">+ add voice</button>
 </div>
-<details class="extras">
-  <summary>extra options</summary>
-  <div class="row">
-    <label>time signature
-      <input id="tsig" type="text" placeholder="auto — e.g. 5/4">
+<div id="alignCard">
+  <h3>🎯 polytemporal alignment</h3>
+  <div class="alignRow">
+    <label>source
+      <select id="alignSource" style="padding:6px 8px;background:#222;color:#eee;
+              border:1px solid #444;border-radius:4px;font:inherit;max-width:200px"></select>
     </label>
-    <label>output crop (beats)
-      <input id="outCrop" type="text" placeholder="full · or 0..16">
+    <label class="inline" id="alignPairBaseLbl"
+           title="count the base tempo r as one of the voices, so each T_j only needs ONE selected tempo to be paired">
+      <input id="alignPairBase" type="checkbox" checked> base tempo counts
     </label>
   </div>
-  <div class="hint">
-    <b>time signature</b> overrides what's in the file (only affects how bars/beats line up visually).
-    <b>output crop</b> trims the final MIDI to a beat range — e.g. <code>0..16</code> keeps only the first 16 beats.
+  <div class="alignRow" style="align-items:end">
+    <label style="flex:1;display:flex;flex-direction:column;min-width:280px">
+      <span>alignment points
+        <span style="color:#666;font-size:11px">— comma-separated; suffix <b>b</b> = bars</span>
+      </span>
+      <input id="alignBeats" type="text"
+             placeholder='e.g. 0b, 4b, 10b   or   0, 1/3, 2/3, 1'
+             style="margin-top:4px;width:100%;padding:6px 8px">
+    </label>
+    <button id="alignGo" style="background:#7af;color:#000;padding:6px 14px">Generate</button>
   </div>
-</details>
+  <div id="alignStatus" style="font-size:12px;color:#aaa;min-height:1.2em"></div>
+</div>
 <div id="echoes"></div>
 <div class="modeHint" id="modeHint"></div>
 <div id="status"></div>
-<div id="dlBar">
-  <button id="dl" class="dl">⬇ Download MIDI</button>
-  <button id="dlScore" class="dl" style="display:none">⬇ Download score</button>
-</div>
-<div id="scorePanel" style="display:none;margin:8px 0;padding:10px;border:1px solid #333;
-     border-radius:6px;background:#1f1f1f;max-width:460px">
-  <div style="font-size:13px;color:#bbb;margin-bottom:6px">Export MusicXML — choose voices:</div>
-  <div id="scoreVoiceList" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px"></div>
-  <div id="scoreWarn" style="display:none;font-size:12px;color:#e6a060;margin-bottom:6px"></div>
-  <label class="inline" style="font-size:12px"><input type="checkbox" id="scoreSep">
-    download each separately (.zip)</label>
-  <div style="margin-top:8px;display:flex;gap:8px">
-    <button id="scoreGo" class="dl">⬇ Download</button>
-    <button id="scoreCancel">cancel</button>
-  </div>
-</div>
 <div id="playBox" style="margin-top:10px;padding:10px;border:1px solid #333;
      border-radius:6px;background:#1f1f1f;display:none">
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -218,9 +246,8 @@ INDEX_HTML = """<!doctype html>
              style="width:90px">
       <span id="playVolVal" style="width:30px;color:#7af">100</span>
     </label>
-    <label class="inline">
-      <input id="playLoop" type="checkbox"> loop
-    </label>
+    <span style="font-size:11px;color:#666"
+          title="Looping is now per-voice — click the 🔁 icon on a row to loop just that voice.">loop: per-row 🔁</span>
     <span id="playStatus" style="font-size:12px;color:#aaa"></span>
   </div>
   <div id="playVoices" style="display:none"></div>
@@ -232,10 +259,47 @@ INDEX_HTML = """<!doctype html>
     <button data-action="zout" title="zoom out">−</button>
     <button data-action="zin" title="zoom in">+</button>
     <button data-action="fit" title="fit to data">fit</button>
-    <label style="margin-left:14px;color:#aaa" title="Show one row per polytime, plus the combined overlay. Off shows only the combined result.">
+    <label style="margin-left:14px;color:#aaa" title="Show one row per voice, plus the combined overlay. Off shows only the combined result.">
       <input type="checkbox" id="combinedOnly"> combined only
     </label>
     <span style="margin-left:auto;color:#666;font-size:11px">drag to pan · scroll to zoom</span>
+  </div>
+</div>
+<div id="alignFooter">
+  <div class="footRow" id="dlBar">
+    <button id="dl" class="dl">⬇ Download MIDI</button>
+    <button id="dlScore" class="dl" style="display:none">⬇ Download score</button>
+  </div>
+  <div id="scorePanel" style="display:none;padding:10px;border:1px solid #333;
+       border-radius:6px;background:#1f1f1f;max-width:460px">
+    <div style="font-size:13px;color:#bbb;margin-bottom:6px">Export MusicXML — choose voices:</div>
+    <div id="scoreVoiceList" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px"></div>
+    <div id="scoreWarn" style="display:none;font-size:12px;color:#e6a060;margin-bottom:6px"></div>
+    <label class="inline" style="font-size:12px"><input type="checkbox" id="scoreSep">
+      download each separately (.zip)</label>
+    <div style="margin-top:8px;display:flex;gap:8px">
+      <button id="scoreGo" class="dl">⬇ Download</button>
+      <button id="scoreCancel">cancel</button>
+    </div>
+  </div>
+  <details class="extras">
+    <summary>extra options</summary>
+    <div class="row">
+      <label>time signature
+        <input id="tsig" type="text" placeholder="auto — e.g. 5/4">
+      </label>
+      <label>output crop (beats)
+        <input id="outCrop" type="text" placeholder="full · or 0..16">
+      </label>
+    </div>
+    <div class="hint">
+      <b>time signature</b> overrides what's in the file (only affects how bars/beats line up visually).
+      <b>output crop</b> trims the final MIDI to a beat range — e.g. <code>0..16</code> keeps only the first 16 beats.
+    </div>
+  </details>
+  <div class="footRow">
+    <button id="quit" style="background:#444;color:#ccc"
+            title="Stop the server and close TIAGO">× Quit TIAGO</button>
   </div>
 </div>
 <script>
@@ -452,7 +516,7 @@ function draw() {
     const [rlo, rhi] = rowPitchRange(i);
     const noteH = Math.max(2, rowH / (rhi - rlo + 3));
     if (row.overlay) {
-      // Combined output = every included polytime. Read notes/colors from
+      // Combined output = every included voice. Read notes/colors from
       // `echoes` directly so the overlay still renders when per-voice rows
       // are hidden ("combined only" mode).
       for (let k = 0; k < echoes.length; k++) {
@@ -644,6 +708,29 @@ window.addEventListener('mouseup', (e) => {
       setMode(null);
       schedulePreview();
       draw();
+    } else if (mode && mode.type === 'tapBar') {
+      const clickedRow = rows[drag.rowIdx];
+      const onTargetRow = clickedRow && clickedRow.kind === 'input'
+                       && clickedRow.inputId === mode.inputId;
+      if (!onTargetRow) {
+        setMsg("click on the RECORDING's row (the one with ▶ tap a bar active)", true);
+      } else {
+        beat = snapToOriginalNote(beat);
+        if (pendingAnchor == null) {
+          pendingAnchor = beat;
+          draw();
+        } else {
+          const span = Math.abs(beat - pendingAnchor);
+          pendingAnchor = null;
+          if (span <= 0) {
+            setMsg('two clicks must be on different beats', true);
+          } else {
+            applyTappedBar(mode.inputId, span);
+          }
+          setMode(null);
+          draw();
+        }
+      }
     }
   } else if (drag.kind === 'drag-source' && mode) {
     setMode(null);
@@ -699,6 +786,11 @@ function makeEcho(opts) {
     pitch: opts.pitch || '',
     color: PALETTE[i % PALETTE.length],
     include: true,
+    // Positioning controls (range/start/pitch) live in a collapsible body —
+    // hidden by default to keep the row glanceable. Loop is a per-echo
+    // toggle that the playback scheduler honours (task 4).
+    expanded: false,
+    loop: false,
     source_id: opts.source_id != null ? opts.source_id
              : (inputs[0] ? inputs[0].id : null),
   };
@@ -711,10 +803,16 @@ function setMode(m) {
     const sel = '.echo[data-idx="'+m.echoIdx+'"] button.mode[data-mode="'+m.type+'"]';
     const btn = document.querySelector(sel);
     if (btn) btn.classList.add('active');
-    modeHint.textContent =
-      m.type === 'source'
-        ? 'click on ORIGINAL row to set echo '+(m.echoIdx+1)+' source (click+click or drag)'
-        : 'click anywhere to set echo '+(m.echoIdx+1)+' start';
+    if (m.type === 'tapBar') {
+      modeHint.textContent =
+        "click two points one bar apart on this recording's row to set its tempo";
+    } else if (m.type === 'source') {
+      modeHint.textContent =
+        'click on ORIGINAL row to set echo '+(m.echoIdx+1)+' source (click+click or drag)';
+    } else {
+      modeHint.textContent =
+        'click anywhere to set echo '+(m.echoIdx+1)+' start';
+    }
   } else {
     modeHint.textContent = '';
   }
@@ -833,7 +931,8 @@ function renderEchoes() {
   echoesEl.innerHTML = '';
   echoes.forEach((e, i) => {
     const div = document.createElement('div');
-    div.className = 'echo';
+    div.className = 'echo polytime' + (e.expanded ? '' : ' collapsed')
+                  + (e.include === false ? ' muted' : '');
     div.dataset.idx = i;
     div.style.borderLeftColor = e.color;
     const sourceOpts = ['<option value="">all inputs (merged)</option>']
@@ -842,29 +941,47 @@ function renderEchoes() {
         inp.name.replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))+'</option>'))
       .join('');
     div.innerHTML = `
-      <label class="inline" style="margin:0"><input type="checkbox" data-f="include"${e.include!==false?' checked':''}> on</label>
-      <span class="swatch" style="background:${e.color}"></span>
-      <span class="name">echo ${i+1}</span>
-      <label class="field">from
-        <select data-f="source_id" style="padding:3px 6px;background:#222;color:#eee;border:1px solid #444;border-radius:3px;font:inherit;max-width:140px">${sourceOpts}</select>
-      </label>
-      <label class="field">scale<input data-f="scale" type="text" value="${e.scale}"></label>
-      <div class="field" data-f="pitchBuilder">pitch
-        <div class="pitchBuilder" style="display:flex;gap:4px;align-items:center"></div>
+      <div class="echoHead">
+        <button class="echoColor" data-toggle="include" style="background:${e.color}"
+                title="${e.include===false?'muted — click to unmute':'click to mute this voice'}">${i+1}</button>
+        <label class="field" style="min-width:140px;flex:0 1 180px">source
+          <select data-f="source_id" style="padding:3px 6px;background:#222;color:#eee;border:1px solid #444;border-radius:3px;font:inherit">${sourceOpts}</select>
+        </label>
+        <label class="field" style="width:90px">scale
+          <input data-f="scale" type="text" value="${e.scale}">
+        </label>
+        <div class="echoSpacer"></div>
+        <button class="echoLoop ${e.loop?'active':''}" data-toggle="loop"
+                title="loop this voice — it restarts as soon as it ends">🔁</button>
+        <button class="echoMore ${e.expanded?'active':''}" data-toggle="expanded"
+                title="show range, start, pitch">⋯</button>
+        <button class="rm" title="delete this voice">×</button>
       </div>
-      <div class="field">range
-        <div><input data-f="source" type="text" value="${e.source ? e.source[0].toFixed(2)+'..'+e.source[1].toFixed(2) : ''}" placeholder="all"><button class="mode" data-mode="source">pick</button></div>
-      </div>
-      <div class="field">start
-        <div><input data-f="start" type="text" value="${e.start}" placeholder="2b"><button class="mode" data-mode="start">pick</button></div>
-      </div>
-      <button class="rm">×</button>`;
+      <div class="echoBody">
+        <div class="field">range
+          <div>
+            <input data-f="source" type="text" value="${e.source ? e.source[0].toFixed(2)+'..'+e.source[1].toFixed(2) : ''}" placeholder="all">
+            <button class="mode" data-mode="source">pick</button>
+          </div>
+        </div>
+        <div class="field">start
+          <div>
+            <input data-f="start" type="text" value="${e.start}" placeholder="2b">
+            <button class="mode" data-mode="start">pick</button>
+          </div>
+        </div>
+        <div class="field" data-f="pitchBuilder">pitch
+          <div class="pitchBuilder" style="display:flex;gap:4px;align-items:center"></div>
+        </div>
+      </div>`;
     echoesEl.appendChild(div);
+
     const pbHost = div.querySelector('[data-f="pitchBuilder"] .pitchBuilder');
     if (pbHost) wirePitchBuilder(e, pbHost);
+
+    // Text inputs (scale, source-range, start).
     div.querySelectorAll('input[data-f]').forEach(inp => {
-      const evt = (inp.type === 'checkbox') ? 'change' : 'input';
-      inp.addEventListener(evt, () => {
+      inp.addEventListener('input', () => {
         const f = inp.dataset.f;
         if (f === 'source') {
           const v = inp.value.trim();
@@ -873,8 +990,6 @@ function renderEchoes() {
             if (isFinite(a) && isFinite(b) && b > a) e.source = [a, b];
             else e.source = null;
           } else e.source = null;
-        } else if (f === 'include') {
-          e.include = inp.checked;
         } else {
           e[f] = inp.value;
         }
@@ -882,12 +997,16 @@ function renderEchoes() {
         schedulePreview();
       });
     });
+
+    // Source dropdown.
     div.querySelectorAll('select[data-f]').forEach(sel => {
       sel.addEventListener('change', () => {
         e.source_id = sel.value ? +sel.value : null;
         schedulePreview();
       });
     });
+
+    // Pick-mode buttons (range, start).
     div.querySelectorAll('button.mode').forEach(b => {
       b.addEventListener('click', () => {
         const t = b.dataset.mode;
@@ -895,9 +1014,36 @@ function renderEchoes() {
         else setMode({ type: t, echoIdx: i });
       });
     });
+
+    // Toggle buttons (include / loop / expanded). Update in-place so that
+    // typing in a sibling input doesn't lose focus on every click.
+    div.querySelectorAll('[data-toggle]').forEach(b => {
+      b.addEventListener('click', () => {
+        const k = b.dataset.toggle;
+        if (k === 'include') {
+          e.include = e.include === false;
+          div.classList.toggle('muted', e.include === false);
+          b.title = e.include === false ? 'muted — click to unmute'
+                                        : 'click to mute this voice';
+          draw(); schedulePreview();
+        } else if (k === 'loop') {
+          e.loop = !e.loop;
+          b.classList.toggle('active', e.loop);
+          // Playback scheduler honours `loop` (see startPlaybackFrom).
+          if (playState === 'playing') {
+            pausePlayback(); startPlaybackFrom(playPosBeats);
+          }
+        } else if (k === 'expanded') {
+          e.expanded = !e.expanded;
+          div.classList.toggle('collapsed', !e.expanded);
+          b.classList.toggle('active', e.expanded);
+        }
+      });
+    });
+
+    // Delete.
     div.querySelector('button.rm').addEventListener('click', () => {
       echoes.splice(i, 1);
-      // re-assign colors so they stay consecutive
       echoes.forEach((x, k) => x.color = PALETTE[k % PALETTE.length]);
       if (mode && mode.echoIdx === i) setMode(null);
       renderEchoes();
@@ -1052,7 +1198,13 @@ function addInput(file, opts) {
   opts = opts || {};
   const kind = opts.kind || 'file';
   const name = opts.name || file.name || ('recording '+nextInputId+'.mid');
-  inputs.push({ id: nextInputId++, file, name, offset: 0, kind });
+  inputs.push({
+    id: nextInputId++, file, name, offset: 0, kind,
+    // Recording-only: raw [{midi, onMs, offMs}] kept so tap-a-bar can rebuild
+    // the MIDI at the real tempo, and the last-tapped bpm for the row label.
+    recEvents: opts.recEvents || null,
+    bpm: opts.bpm || null,
+  });
 }
 function addInputs(files, opts) {
   for (const f of files) addInput(f, opts);
@@ -1075,6 +1227,8 @@ function removeInput(id) {
 function renderInputs() {
   // Echo "from" dropdowns enumerate inputs — refresh them when the list changes.
   if (typeof renderEchoes === 'function' && echoes.length) renderEchoes();
+  if (typeof refreshAlignSources === 'function') refreshAlignSources();
+  if (typeof syncWorkspaceChrome === 'function') syncWorkspaceChrome();
   const el = $('inputList');
   el.innerHTML = '';
   picked.textContent = inputs.length
@@ -1083,6 +1237,12 @@ function renderInputs() {
   inputs.forEach((inp) => {
     const div = document.createElement('div');
     div.className = 'echo';
+    const tapBarBtn = (inp.kind === 'rec' && inp.recEvents)
+      ? ('<button class="mode" data-tap-bar="'+inp.id+'" '+
+         'title="Click here, then drop two clicks one bar apart on this row '+
+         'in the piano roll. The tempo follows.">▶ tap a bar'+
+         (inp.bpm ? ' · '+Math.round(inp.bpm)+' bpm' : '')+'</button>')
+      : '';
     div.innerHTML =
       '<span class="name" style="min-width:0">'+
         (inp.kind==='rec'?'🎹 ':inp.kind==='score'?'🎼 ':'📄 ')+
@@ -1090,8 +1250,9 @@ function renderInputs() {
       '<label class="field">offset (beats)<div><input data-off="'+inp.id+
         '" type="number" step="0.5" value="'+inp.offset+
         '" style="width:80px"></div></label>'+
+      tapBarBtn +
       '<button class="mode" data-copy="'+inp.id+'" '+
-        'title="Add a polytime with ratio 1 from this input (= a copy)">+ as copy</button>'+
+        'title="Add a voice with ratio 1 from this input (= a copy)">+ as copy</button>'+
       '<button class="rm" data-rm="'+inp.id+'">×</button>';
     el.appendChild(div);
   });
@@ -1103,11 +1264,18 @@ function renderInputs() {
   });
   el.querySelectorAll('button[data-copy]').forEach(b => {
     b.addEventListener('click', () => {
-      if (echoes.length >= 8) { setStatus('max 8 polytimes', true); return; }
+      if (echoes.length >= 8) { setStatus('max 8 voices', true); return; }
       echoes.push(makeEcho({ source_id: +b.dataset.copy, scale: '1' }));
       renderEchoes();
       rebuildRows();
       schedulePreview();
+    });
+  });
+  el.querySelectorAll('button[data-tap-bar]').forEach(b => {
+    b.addEventListener('click', () => {
+      const id = +b.dataset.tapBar;
+      if (mode && mode.type === 'tapBar' && mode.inputId === id) setMode(null);
+      else setMode({ type: 'tapBar', inputId: id });
     });
   });
   el.querySelectorAll('button[data-rm]').forEach(b => {
@@ -1225,6 +1393,159 @@ dlScore.addEventListener('click',()=>{
 $('scoreCancel').addEventListener('click',()=>{ $('scorePanel').style.display='none'; });
 $('scoreGo').addEventListener('click', exportScore);
 
+// ── Polytemporal coincidence: generate aligned echoes ─────────────────
+// Calls /decompose (subharmonic cover): h·r/a tempi all anchored at the
+// downbeat. Each Tempo(h, a) maps to one echo with
+//       scale = a / (h * S * L_src)   start = 0
+// L_src is the source bar in beats (= beats_per_bar from the detected time
+// signature). The "base tempo counts" option rides along in the payload.
+
+function _gcdInt(a, b) {
+  a = Math.abs(a); b = Math.abs(b);
+  while (b) { const t = a % b; a = b; b = t; }
+  return a;
+}
+function _normFrac(n, d) {
+  if (d < 0) { n = -n; d = -d; }
+  const g = _gcdInt(n, d) || 1;
+  return { n: n / g, d: d / g };
+}
+function _fracStr(f) { return f.d === 1 ? String(f.n) : (f.n + '/' + f.d); }
+
+function _alignTokenToBeats(tok) {
+  // Returns a beat-count string ready for the backend's Fraction parser.
+  // "4b" → "16" (assuming beatsPerBar=4); "3/2" → "3/2"; "1.5" → "1.5".
+  tok = String(tok).trim();
+  if (!tok) return null;
+  let isBar = false;
+  if (tok.endsWith('b') || tok.endsWith('B')) {
+    isBar = true;
+    tok = tok.slice(0, -1).trim();
+  }
+  if (!isBar) return tok;  // backend handles fractions / floats natively
+  const L = Math.max(1, beatsPerBar || 4);
+  if (tok.includes('/')) {
+    const [n, d] = tok.split('/').map(s => parseFloat(s.trim()));
+    if (!isFinite(n) || !isFinite(d) || d === 0) return null;
+    const f = _normFrac(Math.round(n * L), Math.round(d));
+    return _fracStr(f);
+  }
+  const v = parseFloat(tok);
+  if (!isFinite(v)) return null;
+  // Multiply float * L exactly via /1000 snap → fraction → simplify.
+  const f = _normFrac(Math.round(v * L * 1000), 1000);
+  return _fracStr(f);
+}
+
+function setAlignStatus(msg, err) {
+  const el = $('alignStatus');
+  el.textContent = msg;
+  el.style.color = err ? '#f77' : '#7af';
+}
+
+function refreshAlignSources() {
+  const sel = $('alignSource');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (const inp of inputs) {
+    const opt = document.createElement('option');
+    opt.value = inp.id;
+    opt.textContent = inp.name;
+    sel.appendChild(opt);
+  }
+  if (prev && inputs.some(i => String(i.id) === prev)) sel.value = prev;
+}
+
+async function generateAlignedEchoes() {
+  if (!inputs.length) { setAlignStatus('drop a source first', true); return; }
+  const sourceId = +$('alignSource').value || (inputs[0] && inputs[0].id);
+  const beatsStr = $('alignBeats').value.trim();
+
+  const tokens = beatsStr.split(',').map(s => s.trim()).filter(Boolean);
+  if (!tokens.length) {
+    setAlignStatus('enter at least one alignment point', true); return;
+  }
+  const times = [];
+  for (const t of tokens) {
+    const s = _alignTokenToBeats(t);
+    if (!s) { setAlignStatus('bad alignment point: ' + t, true); return; }
+    times.push(s);
+  }
+
+  const payload = { times, pair_with_base: $('alignPairBase').checked };
+
+  setAlignStatus('decomposing…');
+  let result;
+  try {
+    const fd = new FormData();
+    fd.append('payload', JSON.stringify(payload));
+    const r = await fetch('/decompose', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    result = j;
+  } catch (e) {
+    setAlignStatus('error: ' + e.message, true); return;
+  }
+
+  const L_src = Math.max(1, beatsPerBar || 4);
+  // S is rational (Sn/Sd) — bars-scaled inputs reduce K to lowest terms and
+  // push the scale into the denominator, so keep the math exact. The float
+  // `result.scale` is display-only.
+  const Sn = result.scale_num, Sd = result.scale_den;
+  const Sstr = Sd === 1 ? String(Sn) : (Sn + '/' + Sd);
+
+  // Map each tempo h·r/a to a candidate echo: period a/(h·S) beats, starting
+  // on the downbeat. scale = a/(h·S·L_src) = a·Sd/(h·Sn·L_src), kept exact.
+  const candidates = result.tempi.map(t => ({
+    source_id: sourceId,
+    scale: _fracStr(_normFrac(t.a * Sd, t.h * Sn * L_src)),
+    start: '0',
+  }));
+  const summary = result.tempi.map(t =>
+    `(${t.ratio_str}·r, ${t.hits_K.length} pts)`).join('  ');
+  const count = result.num_tempi;
+
+  // Dedupe against existing echoes by (source, scale, start).
+  const fresh = candidates.filter(c =>
+    !echoes.some(e =>
+      String(e.source_id || '') === String(c.source_id) &&
+      String(e.scale || '').trim() === c.scale &&
+      String(e.start || '').trim() === c.start));
+
+  const room = 8 - echoes.length;
+  if (fresh.length > room) {
+    setAlignStatus(`only room for ${room} more voice(s); ${fresh.length} computed`, true);
+    return;
+  }
+  for (const c of fresh) {
+    echoes.push(makeEcho({
+      source_id: c.source_id, scale: c.scale, start: c.start,
+    }));
+  }
+  renderEchoes();
+  rebuildRows();
+  schedulePreview();
+
+  const dropped = candidates.length - fresh.length;
+  setAlignStatus(
+    `added ${fresh.length}/${count} tempi` +
+    (dropped ? ` · ${dropped} already present` : '') +
+    ` · S=${Sstr} · ` + summary
+  );
+}
+
+$('alignGo').addEventListener('click', generateAlignedEchoes);
+$('alignBeats').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') generateAlignedEchoes();
+});
+
+// Drop zone collapses + align card appears as soon as the user has any input.
+function syncWorkspaceChrome() {
+  const have = inputs.length > 0;
+  $('drop').classList.toggle('compact', have);
+  $('alignCard').classList.toggle('visible', have);
+}
+
 // Output voices that actually produced notes, in echo order. Each is its own
 // independent line — the user picks which to merge into one score (multi-staff)
 // or download separately, so polyrhythms aren't forced onto a shared barline.
@@ -1282,7 +1603,7 @@ async function exportScore(){
     notes: processedVoices[idx+1].notes,
     scale: String((echoes[idx] && echoes[idx].scale) || '1'),
   }));
-  const stem = voices[0] ? voices[0].name : 'polytime';
+  const stem = voices[0] ? voices[0].name : 'tiago';
   setStatus('building score…');
   const fd=new FormData();
   fd.append('payload', JSON.stringify({ stem, mode: sep?'separate':'merge', tsig: scoreTsig, bpm: scoreBpm, voices }));
@@ -1326,7 +1647,7 @@ async function checkForUpdate() {
   const hint = info.platform === 'macos'
     ? 'When dragging to Applications, click <b>Replace</b> to update in place.'
     : info.platform === 'windows'
-    ? 'Quit the current polytime first, then run the new .exe.'
+    ? 'Quit the current TIAGO first, then run the new .exe.'
     : '';
   $('ubHint').innerHTML = hint;
   banner.classList.add('show');
@@ -1371,15 +1692,15 @@ window.addEventListener('pagehide', (e) => {
   }
 });
 $('quit').addEventListener('click', () => {
-  if (!confirm('Stop polytime?')) return;
+  if (!confirm('Stop TIAGO?')) return;
   fetch('/shutdown', {method:'POST'}).catch(()=>{});
   document.body.innerHTML='<div style=\"padding:40px;font-family:sans-serif;'
-    +'color:#aaa;text-align:center\">polytime stopped. You can close this tab.</div>';
+    +'color:#aaa;text-align:center\">TIAGO stopped. You can close this tab.</div>';
 });
 
 // ── MIDI keyboard input (Web MIDI API) ──────────────────────────────────
 const recBox=$('recBox'), recDevice=$('recDevice'), recBtn=$('recBtn'),
-      recStop=$('recStop'), recStatus=$('recStatus'), recBpm=$('recBpm'),
+      recStop=$('recStop'), recStatus=$('recStatus'),
       recMonitor=$('recMonitor');
 let midiAccess=null, recording=false, recStart=0, recEvents=[], openNotes={},
     recTimer=null, activeInputs=[];
@@ -1506,13 +1827,46 @@ recStop.addEventListener('click', () => {
     recStatus.textContent='nothing recorded';
     return;
   }
-  const bpm = Math.max(20, Math.min(400, parseFloat(recBpm.value) || 120));
-  const blob = buildMidi(recEvents, bpm);
+  // Provisional 120 BPM — the user re-stamps after the fact by tapping a bar
+  // on the piano-roll row (see "▶ tap a bar" in renderInputs).
+  const provisionalBpm = 120;
+  const blob = buildMidi(recEvents, provisionalBpm);
   const name = 'recording '+nextInputId+'.mid';
   const f = new File([blob], name, {type: 'audio/midi'});
-  recStatus.textContent=`captured ${recEvents.length} notes`;
-  addInputs([f], {kind:'rec', name});
+  recStatus.textContent=`captured ${recEvents.length} notes · tap a bar to set tempo`;
+  // Keep the raw events so tap-a-bar can rebuild the MIDI at the real tempo
+  // without re-recording. `bpm` starts at the provisional value.
+  addInputs([f], {kind:'rec', name, recEvents: recEvents.slice(),
+                  bpm: provisionalBpm});
 });
+
+// "Tap a bar" — the user marked a span of the piano roll that should be one
+// bar. The recording was built provisionally at 120 BPM, so the piano roll's
+// beats are at 0.5 s each. Convert that span to seconds, then to a real BPM
+// such that one bar (beatsPerBar beats) = the tapped duration, and rebuild
+// the MIDI bytes from the original recEvents. The next /preview pass picks
+// up the new tempo automatically.
+function applyTappedBar(inputId, spanBeatsAtProvisional) {
+  const inp = inputs.find(x => x.id === inputId);
+  if (!inp || !inp.recEvents || !inp.recEvents.length) {
+    setStatus('no recording data to re-stamp', true); return;
+  }
+  const provisionalBpm = inp.bpm || 120;
+  const spanSeconds = spanBeatsAtProvisional * (60 / provisionalBpm);
+  if (spanSeconds <= 0) return;
+  const bpb = Math.max(1, beatsPerBar || 4);
+  const newBpm = bpb * 60 / spanSeconds;
+  if (!isFinite(newBpm) || newBpm < 5 || newBpm > 1000) {
+    setStatus('that span gives an unreasonable tempo ('+newBpm.toFixed(1)+' bpm)', true);
+    return;
+  }
+  const bytes = buildMidi(inp.recEvents, newBpm);
+  inp.file = new File([bytes], inp.name, {type: 'audio/midi'});
+  inp.bpm = newBpm;
+  renderInputs();      // refresh the row label ("· N bpm")
+  refreshPreview();    // re-parse so the piano roll updates
+  setStatus(`tempo set to ${newBpm.toFixed(1)} bpm for ${inp.name}`);
+}
 
 // Minimal Standard MIDI File writer (Type-1, one track) — produces a file
 // any DAW / parser will accept. ppq=480, includes a tempo meta so playback
@@ -1543,7 +1897,7 @@ function buildMidi(notes, bpm) {
   const usPerBeat = Math.round(60000000 / bpm);
   body.push(0, 0xff, 0x51, 0x03,
             (usPerBeat >> 16) & 0xff, (usPerBeat >> 8) & 0xff, usPerBeat & 0xff);
-  // 4/4 time-sig meta (the polytime UI lets the user override before generating)
+  // 4/4 time-sig meta (the TIAGO UI lets the user override before generating)
   body.push(0, 0xff, 0x58, 0x04, 4, 2, 24, 8);
   let prev = 0;
   for (const e of evs) {
@@ -1577,11 +1931,14 @@ function buildMidi(notes, bpm) {
 const playOut=$('playOut'), playBtn=$('playBtn'), pauseBtn=$('pauseBtn'),
       stopBtn=$('stopBtn'), playStatus=$('playStatus'),
       playSpeedEl=$('playSpeed'), playVolEl=$('playVol'),
-      playSpeedVal=$('playSpeedVal'), playVolVal=$('playVolVal'),
-      playLoopEl=$('playLoop');
-let midiOuts=[], playState='stopped', playPosBeats=0, playTimers=[];
+      playSpeedVal=$('playSpeedVal'), playVolVal=$('playVolVal');
+let midiOuts=[], playState='stopped', playPosBeats=0;
 let playStartWall=0, playBpmAtStart=120;
-const heldNotes=new Set();
+// Per-voice scheduler state — each echo schedules and re-arms independently
+// so any subset can loop without the others restarting.
+const voiceTimers = new Map();   // echoIdx → array of setTimeout ids
+const voiceHeld   = new Map();   // echoIdx → Set<midi> of currently-held notes
+let activeVoices = new Set();    // echoes that still have events to fire
 const INTERNAL_ID='__internal__';
 let audioCtx=null;
 const liveVoices=new Map();  // midi → {osc, gain} for the internal synth
@@ -1603,7 +1960,7 @@ let lastVoicesSig = '';
 function renderPlayVoices() {
   // Rebuilding wipes inputs (focus, mid-edit text). Only re-render when the
   // row structure actually changes — typing a scale shouldn't reset crops.
-  // Source rows aren't played (collectPlayEvents skips them), so they don't
+  // Source rows aren't played (collectVoiceEvents skips them), so they don't
   // appear here; an echo's on/off lives in the echo strip — one source of
   // truth, no redundant mute control.
   const playable = rows.filter(r => r.overlay || r.kind === 'echo');
@@ -1642,7 +1999,6 @@ function combinedCropRange() {
 playSpeedEl.addEventListener('input', () => {
   playSpeedVal.textContent = (+playSpeedEl.value).toFixed(2)+'×';
   if (playState==='playing') {
-    const wasPaused = true;
     pausePlayback();
     startPlaybackFrom(playPosBeats);
   }
@@ -1721,46 +2077,58 @@ function internalNoteOff(midi, immediate=false) {
 function internalAllOff() {
   for (const m of [...liveVoices.keys()]) internalNoteOff(m, true);
 }
-function collectPlayEvents() {
+function collectVoiceEvents(k) {
+  // Events for ONE echo, beat-coords in the global timeline. Honours the
+  // per-voice and combined crop ranges. Returns null if the voice has nothing
+  // (excluded, no notes, fully cropped out).
+  const ek = echoes[k];
+  if (!ek || ek.include === false) return null;
+  const pv = processedVoices && processedVoices[k+1];
+  if (!pv || !pv.notes) return null;
+  const s = voiceSettings.get('echo:' + ek.id);
+  const local = s ? parseCrop(s.crop) : null;
+  const globalCrop = combinedCropRange();
   const evs = [];
-  const global = combinedCropRange();
-  // Walk echoes/processedVoices directly rather than `rows`, so combined-only
-  // mode (which has no per-echo rows) still produces playback events. Each
-  // echo's per-voice crop lives in voiceSettings under 'echo:'+echo.id —
-  // stable across rebuildRows().
-  for (let k = 0; k < echoes.length; k++) {
-    const ek = echoes[k];
-    if (ek.include === false) continue;
-    const pv = processedVoices && processedVoices[k+1];
-    if (!pv || !pv.notes) continue;
-    const s = voiceSettings.get('echo:' + ek.id);
-    const local = s ? parseCrop(s.crop) : null;
-    for (const n of pv.notes) {
-      let on = n.on, off = n.off;
-      for (const r of [local, global]) {
-        if (!r) continue;
-        if (off <= r[0] || on >= r[1]) { on = off = null; break; }
-        on = Math.max(on, r[0]); off = Math.min(off, r[1]);
-      }
-      if (on == null || off <= on) continue;
-      evs.push({t:on, kind:'on', midi:n.midi});
-      evs.push({t:off, kind:'off', midi:n.midi});
+  for (const n of pv.notes) {
+    let on = n.on, off = n.off;
+    for (const r of [local, globalCrop]) {
+      if (!r) continue;
+      if (off <= r[0] || on >= r[1]) { on = off = null; break; }
+      on = Math.max(on, r[0]); off = Math.min(off, r[1]);
     }
+    if (on == null || off <= on) continue;
+    evs.push({t:on, kind:'on', midi:n.midi});
+    evs.push({t:off, kind:'off', midi:n.midi});
   }
   evs.sort((a,b)=> a.t-b.t || (a.kind==='off'?-1:1));
-  return evs;
+  return evs.length ? evs : null;
+}
+function silenceVoice(k) {
+  const held = voiceHeld.get(k);
+  if (!held || !held.size) return;
+  if (usingInternal()) {
+    for (const m of held) internalNoteOff(m, true);
+  } else {
+    const out = selectedOutput();
+    if (out) for (const m of held) out.send([0x80, m, 0]);
+  }
+  held.clear();
 }
 function silenceAll() {
-  if (usingInternal()) { internalAllOff(); heldNotes.clear(); return; }
-  const out = selectedOutput();
-  if (!out) { heldNotes.clear(); return; }
-  for (const m of heldNotes) out.send([0x80, m, 0]);
-  out.send([0xb0, 123, 0]);  // all-notes-off (channel 0)
-  heldNotes.clear();
+  for (const k of voiceHeld.keys()) silenceVoice(k);
+  if (!usingInternal()) {
+    const out = selectedOutput();
+    if (out) out.send([0xb0, 123, 0]);  // all-notes-off CC fallback
+  }
 }
-function clearTimers() {
-  for (const id of playTimers) clearTimeout(id);
-  playTimers = [];
+function clearVoiceTimers(k) {
+  const ids = voiceTimers.get(k);
+  if (!ids) return;
+  for (const id of ids) clearTimeout(id);
+  voiceTimers.set(k, []);
+}
+function clearAllVoiceTimers() {
+  for (const k of voiceTimers.keys()) clearVoiceTimers(k);
 }
 function tickPlayhead() {
   if (playState !== 'playing') {
@@ -1777,13 +2145,66 @@ function stopPlayhead() {
   playheadBeat = null;
   draw();
 }
+// Schedule one voice's events. `originBeat` is where the voice's iteration
+// starts in the global timeline (= 0 for the first iteration, then advanced
+// by `voiceLen` on each loop re-arm). `beatStart` is the master playback
+// position — used so a paused-then-resumed voice picks up at the right note.
+function scheduleVoice(k, beatStart, originBeat, secPerBeat, internal, out) {
+  const events = collectVoiceEvents(k);
+  if (!events) {
+    activeVoices.delete(k);
+    if (activeVoices.size === 0 && playState === 'playing') stopPlayback();
+    return;
+  }
+  if (!voiceTimers.has(k)) voiceTimers.set(k, []);
+  if (!voiceHeld.has(k))   voiceHeld.set(k, new Set());
+  const held = voiceHeld.get(k);
+  let voiceEnd = 0;
+  for (const ev of events) {
+    if (ev.t > voiceEnd) voiceEnd = ev.t;
+    const globalBeat = originBeat + ev.t;
+    if (globalBeat < beatStart) continue;
+    const delay = (globalBeat - beatStart) * secPerBeat * 1000;
+    const id = setTimeout(() => {
+      if (playState !== 'playing') return;
+      const vel = Math.max(1, +playVolEl.value);
+      if (ev.kind === 'on') {
+        if (internal) internalNoteOn(ev.midi, vel);
+        else out.send([0x90, ev.midi, vel]);
+        held.add(ev.midi);
+      } else {
+        if (internal) internalNoteOff(ev.midi);
+        else out.send([0x80, ev.midi, 0]);
+        held.delete(ev.midi);
+      }
+    }, delay);
+    voiceTimers.get(k).push(id);
+  }
+  // Per-voice end handler: silence the voice's own notes; loop or retire it.
+  // No "+80ms tail" race with the next iteration's first note-on — those are
+  // scheduled at the same wall time, and setTimeout preserves submission order
+  // so the note_off lands before the next note_on.
+  const endDelay = (originBeat + voiceEnd - beatStart) * secPerBeat * 1000;
+  const endId = setTimeout(() => {
+    if (playState !== 'playing') return;
+    silenceVoice(k);
+    if (echoes[k] && echoes[k].loop) {
+      scheduleVoice(k, originBeat + voiceEnd, originBeat + voiceEnd,
+                    secPerBeat, internal, out);
+    } else {
+      activeVoices.delete(k);
+      if (activeVoices.size === 0) stopPlayback();
+    }
+  }, Math.max(0, endDelay));
+  voiceTimers.get(k).push(endId);
+}
+
 function startPlaybackFrom(beatStart) {
   const internal = usingInternal();
   const out = internal ? null : selectedOutput();
   if (!internal && !out) { setStatus('select a MIDI output', true); return; }
   if (internal) ensureAudio();
-  const evs = collectPlayEvents();
-  if (!evs.length) { setStatus('nothing to play — drop a MIDI first', true); return; }
+
   const speed = +playSpeedEl.value;
   const bpm = detectedBpm * speed;
   const secPerBeat = 60 / bpm;
@@ -1792,45 +2213,27 @@ function startPlaybackFrom(beatStart) {
   playPosBeats = beatStart;
   playState = 'playing';
   playBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
-  let scheduledEnd = 0;
-  for (const e of evs) {
-    if (e.t < beatStart) continue;
-    const delay = (e.t - beatStart) * secPerBeat * 1000;
-    if (delay > scheduledEnd) scheduledEnd = delay;
-    const id = setTimeout(() => {
-      if (playState !== 'playing') return;
-      const vel = Math.max(1, +playVolEl.value);
-      if (e.kind === 'on') {
-        if (internal) internalNoteOn(e.midi, vel);
-        else out.send([0x90, e.midi, vel]);
-        heldNotes.add(e.midi);
-      } else {
-        if (internal) internalNoteOff(e.midi);
-        else out.send([0x80, e.midi, 0]);
-        heldNotes.delete(e.midi);
-      }
-    }, delay);
-    playTimers.push(id);
+
+  clearAllVoiceTimers();
+  activeVoices = new Set();
+  let nLoop = 0;
+  for (let k = 0; k < echoes.length; k++) {
+    const evs = collectVoiceEvents(k);
+    if (!evs) continue;
+    activeVoices.add(k);
+    if (echoes[k].loop) nLoop++;
+    scheduleVoice(k, beatStart, 0, secPerBeat, internal, out);
   }
-  const endId = setTimeout(() => {
-    if (playState !== 'playing') return;
-    silenceAll();
-    if (playLoopEl.checked) {
-      clearTimers();
-      startPlaybackFrom(0);
-    } else {
-      stopPlayback();
-    }
-  }, scheduledEnd + 80);
-  playTimers.push(endId);
-  const cropSummary = [];
-  const labelByPid = new Map(rows.map(r => [r.pid, r.label]));
-  voiceSettings.forEach((s, pid) => {
-    const r = parseCrop(s.crop);
-    if (r) cropSummary.push((labelByPid.get(pid)||'?')+':'+r[0]+'..'+r[1]);
-  });
-  playStatus.textContent = `playing · ${bpm.toFixed(0)} bpm · vel ${+playVolEl.value}`
-    + (cropSummary.length ? ' · '+cropSummary.join(', ') : '');
+
+  if (activeVoices.size === 0) {
+    playState = 'stopped';
+    playBtn.disabled = false; pauseBtn.disabled = true; stopBtn.disabled = true;
+    setStatus('nothing to play — drop a MIDI first', true);
+    return;
+  }
+
+  const loopTag = nLoop ? ` · ${nLoop} 🔁` : '';
+  playStatus.textContent = `playing · ${bpm.toFixed(0)} bpm · vel ${+playVolEl.value}${loopTag}`;
   if (!playheadRaf) playheadRaf = requestAnimationFrame(tickPlayhead);
 }
 function pausePlayback() {
@@ -1838,7 +2241,7 @@ function pausePlayback() {
   const elapsedBeats = (performance.now() - playStartWall) / 1000 *
                        (playBpmAtStart / 60);
   playPosBeats += elapsedBeats;
-  clearTimers();
+  clearAllVoiceTimers();
   silenceAll();
   playState = 'paused';
   stopPlayhead();
@@ -1846,10 +2249,11 @@ function pausePlayback() {
   playStatus.textContent = `paused at beat ${playPosBeats.toFixed(2)}`;
 }
 function stopPlayback() {
-  clearTimers();
+  clearAllVoiceTimers();
   silenceAll();
   playState = 'stopped';
   playPosBeats = 0;
+  activeVoices.clear();
   stopPlayhead();
   playBtn.disabled = false; pauseBtn.disabled = true; stopBtn.disabled = true;
   playStatus.textContent = 'stopped';
@@ -1860,7 +2264,7 @@ playBtn.addEventListener('click', async () => {
     catch { setStatus('MIDI permission denied — pick "Internal synth"', true); return; }
   }
   if (playState === 'paused') startPlaybackFrom(playPosBeats);
-  else { clearTimers(); silenceAll(); startPlaybackFrom(0); }
+  else { clearAllVoiceTimers(); silenceAll(); startPlaybackFrom(0); }
 });
 pauseBtn.addEventListener('click', pausePlayback);
 stopBtn.addEventListener('click', stopPlayback);
@@ -1921,7 +2325,7 @@ def _voices_from_midi(path: Path) -> tuple[list[dict], float, int, int]:
         name = None
         for msg in track:
             if msg.type == "track_name":
-                # save_mido writes "<part>/<voice>". In polytime that's
+                # save_mido writes "<part>/<voice>". In TIAGO that's
                 # "X/X" because part_name == voice_id; un-double it. Voice IDs
                 # themselves can contain '/', so we can't just split-and-keep-last.
                 raw = msg.name
@@ -2009,7 +2413,7 @@ def _safe_stem(s: str) -> str:
     import re
     stem = Path(str(s or "")).stem
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
-    return stem or "polytime"
+    return stem or "tiago"
 
 
 def _unstretch_voice(v: dict, bpm: float) -> tuple[list[dict], float]:
@@ -2311,6 +2715,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_export_score()
             elif self.path == "/process":
                 self._handle_process()
+            elif self.path == "/decompose":
+                self._handle_decompose()
             elif self.path == "/download_update":
                 self._handle_download_update()
             elif self.path == "/shutdown":
@@ -2394,7 +2800,7 @@ class Handler(BaseHTTPRequestHandler):
         if not voices:
             raise ValueError("select at least one voice to export")
         mode = spec.get("mode", "merge")
-        stem = _safe_stem(spec.get("stem") or "polytime")
+        stem = _safe_stem(spec.get("stem") or "tiago")
         ts = parse_ts(spec.get("tsig")) or TimeSignature(4, 4)
         try:
             bpm = float(spec.get("bpm") or 120.0)
@@ -2524,8 +2930,8 @@ class Handler(BaseHTTPRequestHandler):
         filename = items[0]["name"] if items else "input"
         tsig_str = (fields.get("tsig") or b"").decode().strip()
         # Inputs are sources only in the new model — nothing from them goes
-        # directly into the output. Every output voice is a polytime (a
-        # ratio-1 polytime is just a copy of its source).
+        # directly into the output. Every output voice is a scaled echo of
+        # its source (a ratio-1 voice is just a plain copy).
         combine = False
         out_crop_str = (fields.get("output_crop") or b"").decode().strip()
         echoes_raw = (fields.get("echoes") or b"[]").decode().strip()
@@ -2534,7 +2940,7 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as e:
             raise ValueError(f"bad echoes JSON: {e}")
         if not isinstance(echoes_list, list) or not echoes_list:
-            raise ValueError("add at least one polytime (or '+ as copy' an input)")
+            raise ValueError("add at least one voice (or '+ as copy' an input)")
         # Drop excluded echoes BEFORE the 8-voice check — that gate matters
         # for what actually renders, not for what's in the UI.
         echoes_list = [e for e in echoes_list if e.get("include", True)]
@@ -2572,7 +2978,7 @@ class Handler(BaseHTTPRequestHandler):
             inputs_by_id = {int(it["id"]): it for it in items}
             default_sid = int(items[0]["id"])
 
-            # Group polytimes by source input. Each group runs through polytime()
+            # Group voices by source input. Each group runs through polytime()
             # against ONLY its source file, so an echo that picks source=A truly
             # derives from A and never sees B's notes — no more merge bleed.
             groups: dict[int, list[tuple[int, dict]]] = {}
@@ -2619,7 +3025,7 @@ class Handler(BaseHTTPRequestHandler):
                     str(e.get("pitch", "") or "").strip() for _, e in group
                 )
 
-                # Skip per-polytime ranges that landed on nothing — let the rest
+                # Skip per-voice ranges that landed on nothing — let the rest
                 # still render rather than failing the whole request.
                 runnable: list[tuple[int, Fraction, Fraction, tuple[Fraction, Fraction] | None, str]] = []
                 for (idx, _), s, a, rng, pop in zip(group, g_scales, g_ats, g_ranges, g_pitches):
@@ -2653,7 +3059,7 @@ class Handler(BaseHTTPRequestHandler):
                 for r, v in zip(runnable, voices):
                     echo_notes_by_idx[r[0]] = v["notes"]
 
-            # Build the final MIDI from scratch — one track per polytime, in the
+            # Build the final MIDI from scratch — one track per voice, in the
             # client-side order. No theme track (sources are not in output).
             import mido
             PPQ = 480
@@ -2676,7 +3082,7 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 tr = mido.MidiTrack()
                 tr.append(mido.MetaMessage(
-                    "track_name", name=f"polytime {idx+1}", time=0,
+                    "track_name", name=f"voice {idx+1}", time=0,
                 ))
                 evs: list[tuple[int, "mido.Message"]] = []
                 for n in notes:
@@ -2738,11 +3144,37 @@ class Handler(BaseHTTPRequestHandler):
             "beats_per_bar": float(ts.beats_per_measure),
             "midi_data_url": "data:audio/midi;base64," +
                              base64.b64encode(mid_data).decode("ascii"),
-            "midi_filename": f"{stem}_polytime.mid",
+            "midi_filename": f"{stem}_tiago.mid",
             "score_notatable": score_notatable,
             "bpm": base_bpm,
             "detected_ts": ts_label,
         }
+        self._send(200, json.dumps(payload).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+    def _handle_decompose(self):
+        """Constructive inversion of polytemporal coincidence structures.
+
+        Payload: {times: [<float | int | "p/q" | "x.y">], pair_with_base: bool}.
+        Returns the JSON-ready dict from
+        `transforms.inversion.subharmonic_cover_report`: scale S, normalized
+        integer set K, and one entry per tempo h·r/a (ratio, period, hits).
+        """
+        from transforms.inversion import subharmonic_cover_report
+        fields = self._read_fields()
+        raw = fields.get("payload") or b"{}"
+        if isinstance(raw, tuple):
+            raw = raw[1]
+        try:
+            spec = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"bad decompose payload: {e}")
+        times = spec.get("times") or []
+        if not times:
+            raise ValueError("provide at least one coincidence time")
+        pair_with_base = bool(spec.get("pair_with_base", True))
+        payload = subharmonic_cover_report(times, pair_with_base=pair_with_base)
+        payload["mode"] = "subharmonic"
         self._send(200, json.dumps(payload).encode("utf-8"),
                    "application/json; charset=utf-8")
 
@@ -2794,10 +3226,10 @@ def _platform_asset_pattern() -> tuple[str, str]:
     The substring is matched against assets in the latest release so the
     naming in release.yml is the source of truth."""
     if sys.platform == "darwin":
-        return ("macos", "polytime-macos")
+        return ("macos", "tiago-macos")
     if sys.platform.startswith("win"):
-        return ("windows", "polytime-windows")
-    return ("linux", "polytime-linux")
+        return ("windows", "tiago-windows")
+    return ("linux", "tiago-linux")
 
 
 def _fetch_latest_release() -> dict | None:
@@ -2808,7 +3240,7 @@ def _fetch_latest_release() -> dict | None:
     try:
         req = urllib.request.Request(url, headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": f"polytime/{VERSION}",
+            "User-Agent": f"tiago/{VERSION}",
         })
         with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -2873,19 +3305,13 @@ def _watchdog():
 
 
 def _open_in_chromium(url: str) -> None:
-    """Prefer a Web-MIDI-capable browser (Chrome / Edge / Brave / Chromium).
-    Safari and Firefox don't support the MIDI API, so the keyboard panel and
-    live-playback features silently degrade there — bad first-run experience.
-    Falls back to the OS default if none of the preferred browsers is
-    registered with Python's webbrowser module."""
-    for name in ("chrome", "google-chrome", "chromium", "msedge",
-                 "microsoft-edge", "brave"):
-        try:
-            webbrowser.get(name).open_new_tab(url)
-            return
-        except webbrowser.Error:
-            pass
-    webbrowser.open_new_tab(url)
+    """Open the URL in the OS default browser, single tab.
+
+    We used to iterate webbrowser.get("chrome") etc. to force a Web-MIDI-
+    capable browser, but on Windows that runs `chrome.exe <url>` cold, which
+    makes Chrome honour its startup setting and open a new-tab page next to
+    ours. The OS default goes through ShellExecute and lands in one tab."""
+    webbrowser.open(url, new=2)
 
 
 def main():
@@ -2894,7 +3320,7 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     threading.Timer(0.4, lambda: _open_in_chromium(url)).start()
     threading.Thread(target=_watchdog, daemon=True).start()
-    print(f"polytime running at {url}  (Ctrl+C to stop)")
+    print(f"TIAGO running at {url}  (Ctrl+C to stop)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

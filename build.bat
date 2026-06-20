@@ -1,11 +1,11 @@
 @echo off
-REM Build a standalone polytime.exe.
+REM Build a standalone tiago.exe.
 REM Prereq (one-time):  .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 
 set PY=.venv\Scripts\python.exe
 if not exist %PY% set PY=python
 
-%PY% -m PyInstaller --onefile --noconsole --name polytime ^
+%PY% -m PyInstaller --onefile --noconsole --name tiago ^
   --add-data "model;model" ^
   --add-data "transforms;transforms" ^
   --add-data "score_io;score_io" ^
@@ -13,4 +13,4 @@ if not exist %PY% set PY=python
   --hidden-import music21 ^
   app.py
 echo.
-echo Done. See dist\polytime.exe
+echo Done. See dist\tiago.exe
